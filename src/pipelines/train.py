@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from pathlib import Path
+import json
+
+import pandas as pd
+
+from ..data.loader import load_sales, load_web_traffic
+from ..data.validate import validate_all_dataframes
+from ..evaluation.metrics import regression_metrics
+from ..features.build import build_feature_table
+from ..features.select import correlation_prune, low_variance_filter
+from ..models.sklearn_models import SklearnRegressorConfig, SklearnRegressorWrapper
+
+
+@dataclass
+class TrainConfig:
+    data_root: str = "data/datathon-2026-round-1"
+    date_col: str = "Date"
+    target_col: str = "Revenue"
+    model_type: str = "random_forest"
+    valid_fraction: float = 0.2
+    output_dir: str = "results/runs"
+    run_name: str = "baseline_run"
+    random_state: int = 42
+    variance_threshold: float = 0.0
+    correlation_threshold: float = 0.98
+
+
+def _validate_blocking_issues(data_root: str) -> None:
+    validation = validate_all_dataframes(data_root)
+    errors = [
+        issue
+        for result in validation.values()
+        for issue in result.issues
+        if issue.severity == "error"
+    ]
+
+    if errors:
+        details = "\n".join(f"- {e.table}: {e.details}" for e in errors)
+        raise ValueError(f"Validation errors found:\n{details}")
+
+
+def _split_by_time(df: pd.DataFrame, date_col: str, valid_fraction: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not 0.0 < valid_fraction < 0.5:
+        raise ValueError("valid_fraction must be between 0 and 0.5")
+
+    sorted_df = df.sort_values(date_col).reset_index(drop=True)
+    split_idx = int(len(sorted_df) * (1.0 - valid_fraction))
+    return sorted_df.iloc[:split_idx].copy(), sorted_df.iloc[split_idx:].copy()
+
+
+def run_train_pipeline(config: TrainConfig) -> dict[str, object]:
+    """Run end-to-end training with deterministic feature creation and persistence."""
+    _validate_blocking_issues(config.data_root)
+
+    sales = load_sales(config.data_root)
+    web_traffic = load_web_traffic(config.data_root)
+
+    feature_df = build_feature_table(
+        sales_df=sales,
+        web_traffic_df=web_traffic,
+        date_col=config.date_col,
+        target_col=config.target_col,
+    )
+    feature_df = feature_df.dropna().reset_index(drop=True)
+
+    train_df, valid_df = _split_by_time(feature_df, config.date_col, config.valid_fraction)
+
+    drop_cols = [config.date_col, config.target_col, "COGS"]
+    X_train = train_df.drop(columns=drop_cols, errors="ignore")
+    X_valid = valid_df.drop(columns=drop_cols, errors="ignore")
+    y_train = train_df[config.target_col]
+    y_valid = valid_df[config.target_col]
+
+    X_train, selected_after_variance = low_variance_filter(X_train, threshold=config.variance_threshold)
+    X_valid = X_valid.reindex(columns=selected_after_variance, fill_value=0.0)
+
+    X_train, selected_after_corr = correlation_prune(X_train, threshold=config.correlation_threshold)
+    X_valid = X_valid.reindex(columns=selected_after_corr, fill_value=0.0)
+
+    model_cfg = SklearnRegressorConfig(
+        model_type=config.model_type,
+        random_state=config.random_state,
+    )
+    model = SklearnRegressorWrapper(model_cfg).fit(X_train, y_train)
+    preds = model.predict(X_valid)
+
+    metrics = regression_metrics(y_valid, preds)
+
+    run_dir = Path(config.output_dir) / config.run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    model_path = run_dir / "model.pkl"
+    model.save(model_path)
+
+    selected_path = run_dir / "selected_columns.json"
+    selected_path.write_text(json.dumps(selected_after_corr, indent=2), encoding="utf-8")
+
+    config_path = run_dir / "train_config.json"
+    config_path.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
+
+    metrics_path = run_dir / "metrics.json"
+    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+
+    return {
+        "run_dir": str(run_dir),
+        "model_path": str(model_path),
+        "metrics": metrics,
+        "n_train_rows": int(len(train_df)),
+        "n_valid_rows": int(len(valid_df)),
+        "n_features": int(X_train.shape[1]),
+    }
