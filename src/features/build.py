@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 import pandas as pd
 
@@ -81,6 +82,91 @@ def one_hot_encode(df: pd.DataFrame, categorical_cols: list[str]) -> pd.DataFram
     cols = [col for col in categorical_cols if col in df.columns]
     out = pd.get_dummies(df, columns=cols, dummy_na=True)
     return out.reindex(sorted(out.columns), axis=1)
+
+
+def drop_columns(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
+    """Drop multiple columns safely and return a new dataframe."""
+    cols = [col for col in columns]
+    return df.drop(columns=cols) 
+
+
+def add_column(
+    df: pd.DataFrame,
+    column_name: str,
+    values: pd.Series | list[Any] | Any,
+    overwrite: bool = True,
+) -> pd.DataFrame:
+    """Add a column to a dataframe with optional overwrite protection."""
+    if column_name in df.columns and not overwrite:
+        raise ValueError(f"Column '{column_name}' already exists and overwrite=False")
+
+    out = df.copy()
+    out[column_name] = values
+    return out
+
+
+def list_feature_columns(
+    df: pd.DataFrame,
+    date_col: str = "Date",
+    target_col: str = "Revenue",
+) -> dict[str, list[str]]:
+    """List feature columns by common forecasting groups for notebook inspection."""
+    excluded = {date_col, target_col}
+    feature_cols = [col for col in df.columns if col not in excluded]
+
+    numeric = [col for col in feature_cols if pd.api.types.is_numeric_dtype(df[col])]
+    categorical = [col for col in feature_cols if col not in numeric]
+
+    return {
+        "all_features": feature_cols,
+        "numeric_features": numeric,
+        "categorical_features": categorical,
+        "lag_features": [col for col in feature_cols if "_lag_" in col],
+        "rolling_features": [col for col in feature_cols if "_roll_" in col],
+        "time_features": [
+            col
+            for col in feature_cols
+            if col
+            in {
+                "year",
+                "month",
+                "day",
+                "day_of_week",
+                "day_of_year",
+                "week_of_year",
+                "is_month_end",
+                "is_month_start",
+                "is_weekend",
+            }
+        ],
+        "ratio_features": [col for col in feature_cols if "_ratio" in col or "_per_" in col],
+    }
+
+
+def build_feature_matrix(
+    sales_df: pd.DataFrame,
+    web_traffic_df: pd.DataFrame | None = None,
+    date_col: str = "Date",
+    target_col: str = "Revenue",
+    extra_drop_cols: Iterable[str] = ("COGS",),
+    lag_values: tuple[int, ...] = (1, 7, 14, 28),
+    rolling_windows: tuple[int, ...] = (7, 14, 28),
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
+    """Build features and return X, y, and processed feature dataframe for notebooks."""
+    feature_df = build_feature_table(
+        sales_df=sales_df,
+        web_traffic_df=web_traffic_df,
+        date_col=date_col,
+        target_col=target_col,
+        lag_values=lag_values,
+        rolling_windows=rolling_windows,
+    )
+    feature_df = feature_df.dropna().reset_index(drop=True)
+
+    drop_cols = [date_col, target_col, *list(extra_drop_cols)]
+    X = drop_columns(feature_df, drop_cols)
+    y = feature_df[target_col].copy()
+    return X, y, feature_df
 
 
 def build_feature_table(
