@@ -30,10 +30,6 @@ class SklearnRegressorWrapper:
 
     @staticmethod
     def _build_model(config: SklearnRegressorConfig):
-        if config.model_type == "linear":
-            return LinearRegression()
-        if config.model_type == "ridge":
-            return Ridge(alpha=config.alpha, random_state=config.random_state)
         if config.model_type == "gradient_boosting":
             return GradientBoostingRegressor(random_state=config.random_state)
         if config.model_type == "catboost":
