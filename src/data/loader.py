@@ -47,7 +47,10 @@ def load_orders(data_root: str | Path = "data/datathon-2026-round-1") -> pd.Data
 
 def load_order_items(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
 	base_path = Path(data_root) / "transaction"
-	order_items_df = pd.read_csv(base_path / "order_items.csv")
+	order_items_df = pd.read_csv(
+		base_path / "order_items.csv",
+		dtype={"promo_id_2": "string"},
+	)
 	returns_df = pd.read_csv(base_path / "returns.csv")
 	reviews_df = pd.read_csv(base_path / "reviews.csv")
 	reviews_df = reviews_df.drop(columns=["customer_id"], errors="ignore")
