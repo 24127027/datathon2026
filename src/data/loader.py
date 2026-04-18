@@ -3,29 +3,21 @@ from pathlib import Path
 import pandas as pd
 
 
-def load_customers(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
-	csv_path = Path(data_root) / "master" / "customers.csv"
-	return pd.read_csv(csv_path)
-
-
-def load_products(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
-	csv_path = Path(data_root) / "master" / "products.csv"
-	return pd.read_csv(csv_path)
-
-
-def load_promotions(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
-	csv_path = Path(data_root) / "master" / "promotions.csv"
-	return pd.read_csv(csv_path)
-
-
 def load_orders(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
 	base_path = Path(data_root) / "transaction"
 	orders_df = pd.read_csv(base_path / "orders.csv")
 	payments_df = pd.read_csv(base_path / "payments.csv")
 	shipments_df = pd.read_csv(base_path / "shipments.csv")
+	customers_df = pd.read_csv(Path(data_root) / "master" / "customers.csv")
 	payments_df = payments_df.drop(columns=["payment_method"], errors="ignore")
 
-	orders_with_payment = orders_df.merge(
+	orders_with_customers = orders_df.merge(
+		customers_df,
+		on="customer_id",
+		how="left",
+	)
+
+	orders_with_payment = orders_with_customers.merge(
 		payments_df,
 		on="order_id",
 		how="left",
@@ -51,12 +43,19 @@ def load_order_items(data_root: str | Path = "data/datathon-2026-round-1") -> pd
 		base_path / "order_items.csv",
 		dtype={"promo_id_2": "string"},
 	)
+	products_df = pd.read_csv(Path(data_root) / "master" / "products.csv")
 	returns_df = pd.read_csv(base_path / "returns.csv")
 	reviews_df = pd.read_csv(base_path / "reviews.csv")
 	promotions_df = pd.read_csv(Path(data_root) / "master" / "promotions.csv")
 	reviews_df = reviews_df.drop(columns=["customer_id"], errors="ignore")
 
-	order_items_with_returns = order_items_df.merge(
+	order_items_with_products = order_items_df.merge(
+		products_df,
+		on="product_id",
+		how="left",
+	)
+
+	order_items_with_returns = order_items_with_products.merge(
 		returns_df,
 		on=["order_id", "product_id"],
 		how="left",
@@ -92,21 +91,7 @@ def load_order_items(data_root: str | Path = "data/datathon-2026-round-1") -> pd
  
 
 def load_inventory(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
-	inventory_df = pd.read_csv(Path(data_root) / "operational" / "inventory.csv")
-	products_df = pd.read_csv(Path(data_root) / "master" / "products.csv")
-
-	product_extra_columns = [
-		col for col in products_df.columns if col not in inventory_df.columns and col != "product_id"
-	]
-
-	if not product_extra_columns:
-		return inventory_df
-
-	return inventory_df.merge(
-		products_df[["product_id", *product_extra_columns]],
-		on="product_id",
-		how="left",
-	)
+	return pd.read_csv(Path(data_root) / "operational" / "inventory.csv")
 
 
 def load_web_traffic(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
