@@ -50,6 +50,7 @@ def load_order_items(data_root: str | Path = "data/datathon-2026-round-1") -> pd
 	order_items_df = pd.read_csv(base_path / "order_items.csv")
 	returns_df = pd.read_csv(base_path / "returns.csv")
 	reviews_df = pd.read_csv(base_path / "reviews.csv")
+	promotions_df = pd.read_csv(Path(data_root) / "master" / "promotions.csv")
 	reviews_df = reviews_df.drop(columns=["customer_id"], errors="ignore")
 
 	order_items_with_returns = order_items_df.merge(
@@ -57,17 +58,52 @@ def load_order_items(data_root: str | Path = "data/datathon-2026-round-1") -> pd
 		on=["order_id", "product_id"],
 		how="left",
 	)
-
-	return order_items_with_returns.merge(
+	order_items_with_reviews = order_items_with_returns.merge(
 		reviews_df,
 		on=["order_id", "product_id"],
+		how="left",
+	)
+
+	promo_columns = [col for col in promotions_df.columns if col != "promo_id"]
+	promo_for_id_1 = promotions_df.rename(
+		columns={col: f"{col}_promo_1" for col in promo_columns}
+	)
+	promo_for_id_2 = promotions_df.rename(
+		columns={
+			"promo_id": "promo_id_2",
+			**{col: f"{col}_promo_2" for col in promo_columns},
+		}
+	)
+
+	with_promo_1 = order_items_with_reviews.merge(
+		promo_for_id_1,
+		on="promo_id",
+		how="left",
+	)
+
+	return with_promo_1.merge(
+		promo_for_id_2,
+		on="promo_id_2",
 		how="left",
 	)
  
 
 def load_inventory(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
-	csv_path = Path(data_root) / "operational" / "inventory.csv"
-	return pd.read_csv(csv_path)
+	inventory_df = pd.read_csv(Path(data_root) / "operational" / "inventory.csv")
+	products_df = pd.read_csv(Path(data_root) / "master" / "products.csv")
+
+	product_extra_columns = [
+		col for col in products_df.columns if col not in inventory_df.columns and col != "product_id"
+	]
+
+	if not product_extra_columns:
+		return inventory_df
+
+	return inventory_df.merge(
+		products_df[["product_id", *product_extra_columns]],
+		on="product_id",
+		how="left",
+	)
 
 
 def load_web_traffic(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
