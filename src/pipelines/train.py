@@ -42,7 +42,11 @@ def _validate_blocking_issues(data_root: str) -> None:
         raise ValueError(f"Validation errors found:\n{details}")
 
 
-def _split_by_time(df: pd.DataFrame, date_col: str, valid_fraction: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+def split_by_time(df: pd.DataFrame, date_col: str, valid_fraction: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+        Return train/validation splits based on a date column, ensuring temporal integrity for forecasting tasks.
+    """
+    
     if not 0.0 < valid_fraction < 0.5:
         raise ValueError("valid_fraction must be between 0 and 0.5")
 
@@ -66,7 +70,7 @@ def run_train_pipeline(config: TrainConfig) -> dict[str, object]:
     )
     feature_df = feature_df.dropna().reset_index(drop=True)
 
-    train_df, valid_df = _split_by_time(feature_df, config.date_col, config.valid_fraction)
+    train_df, valid_df = split_by_time(feature_df, config.date_col, config.valid_fraction)
 
     drop_cols = [config.date_col, config.target_col, "COGS"]
     X_train = train_df.drop(columns=drop_cols, errors="ignore")
