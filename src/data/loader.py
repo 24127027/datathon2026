@@ -3,6 +3,32 @@ from pathlib import Path
 import pandas as pd
 
 
+def load_customers(
+	data_root: str | Path = "data/datathon-2026-round-1",
+	parse_dates: bool = True,
+) -> pd.DataFrame:
+	csv_path = Path(data_root) / "master" / "customers.csv"
+	date_cols = ["signup_date"] if parse_dates else None
+	return pd.read_csv(csv_path, parse_dates=date_cols)
+
+
+def load_products(
+	data_root: str | Path = "data/datathon-2026-round-1",
+	parse_dates: bool = True,
+) -> pd.DataFrame:
+	csv_path = Path(data_root) / "master" / "products.csv"
+	return pd.read_csv(csv_path)
+
+
+def load_promotions(
+	data_root: str | Path = "data/datathon-2026-round-1",
+	parse_dates: bool = True,
+) -> pd.DataFrame:
+	csv_path = Path(data_root) / "master" / "promotions.csv"
+	date_cols = ["start_date", "end_date"] if parse_dates else None
+	return pd.read_csv(csv_path, parse_dates=date_cols)
+
+
 def load_orders(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
 	base_path = Path(data_root) / "transaction"
 	orders_df = pd.read_csv(base_path / "orders.csv", parse_dates=["order_date"])
@@ -99,18 +125,28 @@ def load_order_items(data_root: str | Path = "data/datathon-2026-round-1") -> pd
 	)
  
 
-def load_inventory(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
-	return pd.read_csv(
-		Path(data_root) / "operational" / "inventory.csv",
-		parse_dates=["snapshot_date"],
-	)
+def load_inventory(
+	data_root: str | Path = "data/datathon-2026-round-1",
+	parse_dates: bool = True,
+) -> pd.DataFrame:
+	csv_path = Path(data_root) / "operational" / "inventory.csv"
+	date_cols = ["snapshot_date"] if parse_dates else None
+	return pd.read_csv(csv_path, parse_dates=date_cols)
 
 
-def load_web_traffic(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
+def load_web_traffic(
+	data_root: str | Path = "data/datathon-2026-round-1",
+	parse_dates: bool = True,
+) -> pd.DataFrame:
 	csv_path = Path(data_root) / "operational" / "web_traffic.csv"
-	return pd.read_csv(csv_path, parse_dates=["date"])
+	date_cols = ["date"] if parse_dates else None
+	return pd.read_csv(csv_path, parse_dates=date_cols)
 
 
-def load_sales(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
+def load_sales(
+	data_root: str | Path = "data/datathon-2026-round-1",
+	parse_dates: bool = True,
+) -> pd.DataFrame:
 	csv_path = Path(data_root) / "analytical" / "sales.csv"
-	return pd.read_csv(csv_path, parse_dates=["Date"])
+	date_cols = ["Date"] if parse_dates else None
+	return pd.read_csv(csv_path, parse_dates=date_cols)
