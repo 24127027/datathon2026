@@ -5,10 +5,16 @@ import pandas as pd
 
 def load_orders(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
 	base_path = Path(data_root) / "transaction"
-	orders_df = pd.read_csv(base_path / "orders.csv")
+	orders_df = pd.read_csv(base_path / "orders.csv", parse_dates=["order_date"])
 	payments_df = pd.read_csv(base_path / "payments.csv")
-	shipments_df = pd.read_csv(base_path / "shipments.csv")
-	customers_df = pd.read_csv(Path(data_root) / "master" / "customers.csv")
+	shipments_df = pd.read_csv(
+		base_path / "shipments.csv",
+		parse_dates=["ship_date", "delivery_date"],
+	)
+	customers_df = pd.read_csv(
+		Path(data_root) / "master" / "customers.csv",
+		parse_dates=["signup_date"],
+	)
 	payments_df = payments_df.drop(columns=["payment_method"], errors="ignore")
 
 	orders_with_customers = orders_df.merge(
@@ -44,9 +50,12 @@ def load_order_items(data_root: str | Path = "data/datathon-2026-round-1") -> pd
 		dtype={"promo_id_2": "string"},
 	)
 	products_df = pd.read_csv(Path(data_root) / "master" / "products.csv")
-	returns_df = pd.read_csv(base_path / "returns.csv")
-	reviews_df = pd.read_csv(base_path / "reviews.csv")
-	promotions_df = pd.read_csv(Path(data_root) / "master" / "promotions.csv")
+	returns_df = pd.read_csv(base_path / "returns.csv", parse_dates=["return_date"])
+	reviews_df = pd.read_csv(base_path / "reviews.csv", parse_dates=["review_date"])
+	promotions_df = pd.read_csv(
+		Path(data_root) / "master" / "promotions.csv",
+		parse_dates=["start_date", "end_date"],
+	)
 	reviews_df = reviews_df.drop(columns=["customer_id"], errors="ignore")
 
 	order_items_with_products = order_items_df.merge(
@@ -91,14 +100,17 @@ def load_order_items(data_root: str | Path = "data/datathon-2026-round-1") -> pd
  
 
 def load_inventory(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
-	return pd.read_csv(Path(data_root) / "operational" / "inventory.csv")
+	return pd.read_csv(
+		Path(data_root) / "operational" / "inventory.csv",
+		parse_dates=["snapshot_date"],
+	)
 
 
 def load_web_traffic(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
 	csv_path = Path(data_root) / "operational" / "web_traffic.csv"
-	return pd.read_csv(csv_path)
+	return pd.read_csv(csv_path, parse_dates=["date"])
 
 
 def load_sales(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
 	csv_path = Path(data_root) / "analytical" / "sales.csv"
-	return pd.read_csv(csv_path)
+	return pd.read_csv(csv_path, parse_dates=["Date"])
