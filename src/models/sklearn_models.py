@@ -73,10 +73,21 @@ class SklearnRegressorWrapper:
             "linear, ridge, gradient_boosting, random_forest, catboost, lightgbm"
         )
 
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> "SklearnRegressorWrapper":
-        self.feature_columns = X.columns.tolist()
-        self.model.fit(X, y)
-        return self
+    def fit(self, X: pd.DataFrame | np.ndarray, y: pd.Series | np.ndarray) -> "SklearnRegressorWrapper":
+        if isinstance(X, pd.DataFrame):
+            self.feature_columns = X.columns.tolist()
+            self.model.fit(X, y)
+            return self
+
+        if isinstance(X, np.ndarray):
+            if X.ndim != 2:
+                raise ValueError(f"Expected 2D numpy array for fit, got shape {X.shape}")
+            # No column labels available when fitting from ndarray.
+            self.feature_columns = []
+            self.model.fit(X, y)
+            return self
+
+        raise TypeError("X must be a pandas DataFrame or a 2D numpy.ndarray")
 
     def predict(self, X: pd.DataFrame | np.ndarray):
         if isinstance(X, pd.DataFrame):
