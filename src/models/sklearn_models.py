@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import pickle
+from typing import Literal
 
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
@@ -11,7 +12,12 @@ from sklearn.linear_model import LinearRegression, Ridge
 
 @dataclass
 class SklearnRegressorConfig:
-    model_type: str = "random_forest"
+    model_type: Literal[
+        "gradient_boosting",
+        "random_forest",
+        "catboost",
+        "lightgbm",
+    ] = "random_forest"
     random_state: int = 42
     n_estimators: int = 400
     max_depth: int | None = None
