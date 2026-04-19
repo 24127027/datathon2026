@@ -5,6 +5,7 @@ from pathlib import Path
 import pickle
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LinearRegression, Ridge
@@ -77,10 +78,23 @@ class SklearnRegressorWrapper:
         self.model.fit(X, y)
         return self
 
-    def predict(self, X: pd.DataFrame):
-        if self.feature_columns:
-            X = X.reindex(columns=self.feature_columns, fill_value=0.0)
-        return self.model.predict(X)
+    def predict(self, X: pd.DataFrame | np.ndarray):
+        if isinstance(X, pd.DataFrame):
+            if self.feature_columns:
+                X = X.reindex(columns=self.feature_columns, fill_value=0.0)
+            return self.model.predict(X)
+
+        if isinstance(X, np.ndarray):
+            if X.ndim != 2:
+                raise ValueError(f"Expected 2D numpy array for prediction, got shape {X.shape}")
+            if self.feature_columns and X.shape[1] != len(self.feature_columns):
+                raise ValueError(
+                    "Numpy feature width does not match fitted feature count: "
+                    f"expected {len(self.feature_columns)}, got {X.shape[1]}"
+                )
+            return self.model.predict(X)
+
+        raise TypeError("X must be a pandas DataFrame or a 2D numpy.ndarray")
 
     def save(self, artifact_path: str | Path) -> None:
         path = Path(artifact_path)
