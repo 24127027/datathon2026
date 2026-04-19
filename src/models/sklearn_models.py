@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import pickle
 from typing import Literal
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -103,7 +104,13 @@ class SklearnRegressorWrapper:
                     "Numpy feature width does not match fitted feature count: "
                     f"expected {len(self.feature_columns)}, got {X.shape[1]}"
                 )
-            return self.model.predict(X)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="X does not have valid feature names, but .* was fitted with feature names",
+                    category=UserWarning,
+                )
+                return self.model.predict(X)
 
         raise TypeError("X must be a pandas DataFrame or a 2D numpy.ndarray")
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import json
 
+import numpy as np
 import pandas as pd
 
 from ..data.loader import load_sales, load_web_traffic
@@ -53,6 +55,97 @@ def split_by_time(df: pd.DataFrame, date_col: str, valid_fraction: float) -> tup
     sorted_df = df.sort_values(date_col).reset_index(drop=True)
     split_idx = int(len(sorted_df) * (1.0 - valid_fraction))
     return sorted_df.iloc[:split_idx].copy(), sorted_df.iloc[split_idx:].copy()
+
+
+def build_revenue_ratio_targets(
+    df: pd.DataFrame,
+    revenue_col: str = "Revenue",
+    cogs_col: str = "COGS",
+    eps: float = 1e-6,
+) -> dict[str, pd.Series]:
+    """Build common target dictionary used by revenue/ratio modeling."""
+    if revenue_col not in df.columns:
+        raise ValueError(f"Missing revenue column: {revenue_col}")
+    if cogs_col not in df.columns:
+        raise ValueError(f"Missing COGS column: {cogs_col}")
+
+    revenue = df[revenue_col].astype("float64")
+    ratio = revenue / df[cogs_col].clip(lower=eps).astype("float64")
+    return {"revenue": revenue, "ratio": ratio}
+
+
+def train_validate_models(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    targets: Mapping[str, pd.Series],
+    model_config: SklearnRegressorConfig,
+    date_col: str = "Date",
+    valid_fraction: float = 0.2,
+) -> dict[str, object]:
+    """Train one model per target on a time split and return validation metrics."""
+    if not feature_cols:
+        raise ValueError("feature_cols must not be empty")
+    if not targets:
+        raise ValueError("targets must contain at least one target series")
+
+    train_df, valid_df = split_by_time(df, date_col=date_col, valid_fraction=valid_fraction)
+    X_train = train_df[feature_cols]
+    X_valid = valid_df[feature_cols]
+
+    models: dict[str, SklearnRegressorWrapper] = {}
+    preds: dict[str, pd.Series] = {}
+    metrics: dict[str, dict[str, float]] = {}
+
+    for target_name, target_values in targets.items():
+        aligned = target_values.reindex(df.index)
+        y_train = aligned.loc[train_df.index]
+        y_valid = aligned.loc[valid_df.index]
+
+        model = SklearnRegressorWrapper(model_config)
+        model.fit(X_train, y_train)
+        pred = pd.Series(model.predict(X_valid), index=valid_df.index, dtype="float64")
+
+        models[target_name] = model
+        preds[target_name] = pred
+        metrics[target_name] = regression_metrics(y_valid, pred)
+
+    return {
+        "train_df": train_df,
+        "valid_df": valid_df,
+        "models": models,
+        "predictions": preds,
+        "metrics": metrics,
+    }
+
+
+def fit_models_full(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    targets: Mapping[str, pd.Series],
+    model_config: SklearnRegressorConfig,
+    use_numpy: bool = True,
+) -> dict[str, SklearnRegressorWrapper]:
+    """Fit one model per target on full data for final submission inference."""
+    if not feature_cols:
+        raise ValueError("feature_cols must not be empty")
+    if not targets:
+        raise ValueError("targets must contain at least one target series")
+
+    if use_numpy:
+        X: pd.DataFrame | np.ndarray = df[feature_cols].to_numpy(dtype="float64")
+    else:
+        X = df[feature_cols]
+
+    models: dict[str, SklearnRegressorWrapper] = {}
+    for target_name, target_values in targets.items():
+        y = target_values.reindex(df.index)
+        y_fit: pd.Series | np.ndarray = y.to_numpy(dtype="float64") if use_numpy else y
+
+        model = SklearnRegressorWrapper(model_config)
+        model.fit(X, y_fit)
+        models[target_name] = model
+
+    return models
 
 
 def run_train_pipeline(config: TrainConfig) -> dict[str, object]:
