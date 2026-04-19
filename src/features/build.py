@@ -78,7 +78,7 @@ def add_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def one_hot_encode(df: pd.DataFrame, categorical_cols: list[str]) -> pd.DataFrame:
-    """Apply deterministic one-hot encoding with sorted output columns."""
+    """Apply deterministxic one-hot encoding with sorted output columns."""
     cols = [col for col in categorical_cols if col in df.columns]
     out = pd.get_dummies(df, columns=cols, dummy_na=True)
     return out.reindex(sorted(out.columns), axis=1)
@@ -199,3 +199,256 @@ def build_feature_table(
     features = add_rolling_features(features, target_col=target_col, windows=rolling_windows, date_col=date_col)
 
     return features
+
+
+def build_daily_one_row_per_day(
+    orders_df: pd.DataFrame,
+    order_items_df: pd.DataFrame,
+    web_traffic_df: pd.DataFrame,
+    inventory_df: pd.DataFrame,
+    sales_df: pd.DataFrame,
+    sales_date_col: str = "Date",
+) -> pd.DataFrame:
+    """Build a single daily table with exactly one row per calendar day.
+
+    This function is designed to match the output schema produced by
+    `load_orders`, `load_order_items`, `load_web_traffic`, `load_inventory`, and `load_sales`.
+    """
+    required_orders = {"order_id", "order_date", "customer_id"}
+    missing_orders = required_orders.difference(orders_df.columns)
+    if missing_orders:
+        raise ValueError(f"orders_df missing required columns: {sorted(missing_orders)}")
+
+    required_items = {"order_id", "quantity", "unit_price", "discount_amount"}
+    missing_items = required_items.difference(order_items_df.columns)
+    if missing_items:
+        raise ValueError(f"order_items_df missing required columns: {sorted(missing_items)}")
+
+    required_web = {"date", "sessions", "unique_visitors", "page_views"}
+    missing_web = required_web.difference(web_traffic_df.columns)
+    if missing_web:
+        raise ValueError(f"web_traffic_df missing required columns: {sorted(missing_web)}")
+
+    required_inventory = {"snapshot_date", "stock_on_hand", "units_received", "units_sold"}
+    missing_inventory = required_inventory.difference(inventory_df.columns)
+    if missing_inventory:
+        raise ValueError(f"inventory_df missing required columns: {sorted(missing_inventory)}")
+
+    required_sales = {sales_date_col, "Revenue", "COGS"}
+    missing_sales = required_sales.difference(sales_df.columns)
+    if missing_sales:
+        raise ValueError(f"sales_df missing required columns: {sorted(missing_sales)}")
+
+    def _existing(cols: Iterable[str], frame: pd.DataFrame) -> list[str]:
+        return [col for col in cols if col in frame.columns]
+
+    sales_daily = sales_df.copy()
+    sales_daily["date"] = pd.to_datetime(sales_daily[sales_date_col], errors="coerce")
+    sales_daily = (
+        sales_daily.dropna(subset=["date"])
+        .groupby("date", as_index=False)[["Revenue", "COGS"]]
+        .sum()
+        .sort_values("date")
+    )
+
+    orders_tmp = orders_df.copy()
+    orders_tmp["order_date"] = pd.to_datetime(orders_tmp["order_date"], errors="coerce")
+    orders_tmp = orders_tmp.dropna(subset=["order_date"])
+    if "order_status" in orders_tmp.columns:
+        normalized_status = orders_tmp["order_status"].astype(str).str.lower().str.strip()
+        orders_tmp["is_returned"] = (normalized_status == "returned").astype(int)
+        orders_tmp["is_cancelled"] = normalized_status.isin({"cancelled", "canceled"}).astype(int)
+    else:
+        orders_tmp["is_returned"] = 0
+        orders_tmp["is_cancelled"] = 0
+
+    if {"ship_date", "delivery_date"}.issubset(orders_tmp.columns):
+        orders_tmp["ship_date"] = pd.to_datetime(orders_tmp["ship_date"], errors="coerce")
+        orders_tmp["delivery_date"] = pd.to_datetime(orders_tmp["delivery_date"], errors="coerce")
+        orders_tmp["delivered_flag"] = orders_tmp["delivery_date"].notna().astype(int)
+        orders_tmp["shipping_lead_days"] = (
+            orders_tmp["delivery_date"] - orders_tmp["ship_date"]
+        ).dt.days
+    else:
+        orders_tmp["delivered_flag"] = 0
+        orders_tmp["shipping_lead_days"] = pd.NA
+
+    orders_agg: dict[str, tuple[str, str]] = {
+        "orders_count": ("order_id", "nunique"),
+        "customers_count": ("customer_id", "nunique"),
+        "returned_orders": ("is_returned", "sum"),
+        "cancelled_orders": ("is_cancelled", "sum"),
+        "delivered_orders": ("delivered_flag", "sum"),
+    }
+    if "payment_value" in orders_tmp.columns:
+        orders_agg["payment_value_total"] = ("payment_value", "sum")
+    if "installments" in orders_tmp.columns:
+        orders_agg["installments_mean"] = ("installments", "mean")
+    if "shipping_fee" in orders_tmp.columns:
+        orders_agg["shipping_fee_total"] = ("shipping_fee", "sum")
+    if "shipping_lead_days" in orders_tmp.columns:
+        orders_agg["shipping_lead_days_mean"] = ("shipping_lead_days", "mean")
+
+    orders_daily = orders_tmp.groupby("order_date", as_index=False).agg(**orders_agg)
+    orders_daily = orders_daily.rename(columns={"order_date": "date"})
+    orders_daily["return_rate_orders"] = (
+        orders_daily["returned_orders"] / orders_daily["orders_count"].replace(0, pd.NA)
+    ).fillna(0.0)
+    orders_daily["cancel_rate_orders"] = (
+        orders_daily["cancelled_orders"] / orders_daily["orders_count"].replace(0, pd.NA)
+    ).fillna(0.0)
+
+    items_tmp = order_items_df.copy()
+    items_tmp["line_gross"] = items_tmp["quantity"] * items_tmp["unit_price"]
+    items_tmp["line_net"] = items_tmp["line_gross"] - items_tmp["discount_amount"]
+
+    order_dates = orders_tmp[["order_id", "order_date"]].drop_duplicates("order_id")
+    items_with_dates = items_tmp.merge(order_dates, on="order_id", how="left")
+    items_with_dates = items_with_dates.dropna(subset=["order_date"])
+
+    items_agg: dict[str, tuple[str, str]] = {
+        "items_count": ("order_id", "size"),
+        "quantity_sold": ("quantity", "sum"),
+        "gross_merch_value": ("line_gross", "sum"),
+        "discount_total": ("discount_amount", "sum"),
+        "net_merch_value": ("line_net", "sum"),
+        "unique_products_sold": ("product_id", "nunique"),
+    }
+    if "refund_amount" in items_with_dates.columns:
+        items_agg["refund_amount_total"] = ("refund_amount", "sum")
+    if "return_quantity" in items_with_dates.columns:
+        items_agg["return_quantity_total"] = ("return_quantity", "sum")
+    if "rating" in items_with_dates.columns:
+        items_agg["rating_mean"] = ("rating", "mean")
+    if "promo_id" in items_with_dates.columns:
+        items_agg["promo_1_usage_count"] = ("promo_id", lambda s: s.notna().sum())
+    if "promo_id_2" in items_with_dates.columns:
+        items_agg["promo_2_usage_count"] = ("promo_id_2", lambda s: s.notna().sum())
+
+    items_daily = items_with_dates.groupby("order_date", as_index=False).agg(**items_agg)
+    items_daily = items_daily.rename(columns={"order_date": "date"})
+
+    web_tmp = web_traffic_df.copy()
+    web_tmp["date"] = pd.to_datetime(web_tmp["date"], errors="coerce")
+    web_tmp = web_tmp.dropna(subset=["date"])
+    web_agg: dict[str, tuple[str, str]] = {
+        "sessions": ("sessions", "sum"),
+        "unique_visitors": ("unique_visitors", "sum"),
+        "page_views": ("page_views", "sum"),
+    }
+    for optional_col in ["bounce_rate", "avg_session_duration_sec"]:
+        if optional_col in web_tmp.columns:
+            web_agg[optional_col] = (optional_col, "mean")
+    web_daily = web_tmp.groupby("date", as_index=False).agg(**web_agg)
+
+    inv_tmp = inventory_df.copy()
+    inv_tmp["snapshot_date"] = pd.to_datetime(inv_tmp["snapshot_date"], errors="coerce")
+    inv_tmp = inv_tmp.dropna(subset=["snapshot_date"])
+    inventory_agg: dict[str, tuple[str, str]] = {
+        "inv_stock_on_hand": ("stock_on_hand", "sum"),
+        "inv_units_received": ("units_received", "sum"),
+        "inv_units_sold": ("units_sold", "sum"),
+    }
+    optional_inventory_sums = {
+        "stockout_days": "inv_stockout_days",
+        "stockout_flag": "inv_stockout_products",
+        "overstock_flag": "inv_overstock_products",
+        "reorder_flag": "inv_reorder_products",
+    }
+    optional_inventory_means = {
+        "days_of_supply": "inv_days_of_supply",
+        "fill_rate": "inv_fill_rate",
+        "sell_through_rate": "inv_sell_through_rate",
+    }
+    for source_col, out_col in optional_inventory_sums.items():
+        if source_col in inv_tmp.columns:
+            inventory_agg[out_col] = (source_col, "sum")
+    for source_col, out_col in optional_inventory_means.items():
+        if source_col in inv_tmp.columns:
+            inventory_agg[out_col] = (source_col, "mean")
+
+    inventory_daily = inv_tmp.groupby("snapshot_date", as_index=False).agg(**inventory_agg)
+    inventory_daily = inventory_daily.rename(columns={"snapshot_date": "date"})
+
+    date_series: list[pd.Series] = [sales_daily["date"], orders_daily["date"], web_daily["date"], inventory_daily["date"]]
+    if not items_daily.empty:
+        date_series.append(items_daily["date"])
+    all_dates = pd.concat(date_series, ignore_index=True).dropna()
+    if all_dates.empty:
+        raise ValueError("No valid dates found across all inputs")
+
+    base_calendar = pd.DataFrame(
+        {
+            "date": pd.date_range(
+                all_dates.min(),
+                all_dates.max(),
+                freq="D",
+            )
+        }
+    )
+
+    daily = (
+        base_calendar.merge(sales_daily, on="date", how="left")
+        .merge(orders_daily, on="date", how="left")
+        .merge(items_daily, on="date", how="left")
+        .merge(web_daily, on="date", how="left")
+        .merge(inventory_daily, on="date", how="left")
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+    for col in daily.columns:
+        if col == "date":
+            continue
+        if pd.api.types.is_numeric_dtype(daily[col]):
+            daily[col] = daily[col].fillna(0.0)
+
+    # Ratios are computed after all numeric missing values have been filled.
+    for needed_col in [
+        "orders_count",
+        "sessions",
+        "quantity_sold",
+        "gross_merch_value",
+        "discount_total",
+        "refund_amount_total",
+    ]:
+        if needed_col not in daily.columns:
+            daily[needed_col] = 0.0
+
+    daily["gross_margin"] = daily["Revenue"] - daily["COGS"]
+    daily["gross_margin_ratio"] = (
+        daily["gross_margin"] / daily["Revenue"].replace(0, pd.NA)
+    ).fillna(0.0)
+    daily["aov_revenue"] = (
+        daily["Revenue"] / daily["orders_count"].replace(0, pd.NA)
+    ).fillna(0.0)
+    daily["conversion_proxy"] = (
+        daily["orders_count"] / daily["sessions"].replace(0, pd.NA)
+    ).fillna(0.0)
+    daily["units_per_order"] = (
+        daily["quantity_sold"] / daily["orders_count"].replace(0, pd.NA)
+    ).fillna(0.0)
+    daily["discount_rate"] = (
+        daily["discount_total"] / daily["gross_merch_value"].replace(0, pd.NA)
+    ).fillna(0.0)
+    daily["refund_rate"] = (
+        daily["refund_amount_total"] / daily["net_merch_value"].replace(0, pd.NA)
+    ).fillna(0.0)
+    daily["pages_per_session"] = (
+        daily["page_views"] / daily["sessions"].replace(0, pd.NA)
+    ).fillna(0.0)
+    daily["sessions_per_visitor"] = (
+        daily["sessions"] / daily["unique_visitors"].replace(0, pd.NA)
+    ).fillna(0.0)
+
+    daily["date"] = pd.to_datetime(daily["date"])
+    daily["year"] = daily["date"].dt.year
+    daily["month"] = daily["date"].dt.month
+    daily["day"] = daily["date"].dt.day
+    daily["day_of_week"] = daily["date"].dt.dayofweek
+    daily["day_of_year"] = daily["date"].dt.dayofyear
+    daily["week_of_year"] = daily["date"].dt.isocalendar().week.astype("Int64")
+    daily["is_weekend"] = (daily["day_of_week"] >= 5).astype(int)
+
+    return daily
+
