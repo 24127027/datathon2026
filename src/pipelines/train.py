@@ -82,11 +82,21 @@ def train_validate_models(
     date_col: str = "date",
     valid_fraction: float = 0.2,
 ) -> dict[str, object]:
-    """Train one model per target on a time split and return validation metrics."""
+    """Train one model per target on a time split and return validation metrics.\\
+        Returns a dictionary containing:\\
+            "train_df": train_df, \\
+            "valid_df": valid_df,\\
+            "models": models,\\
+            "predictions": preds,\\
+            "metrics": metrics,\\
+    """
     if not features:
         raise ValueError("features must not be empty")
     if not targets:
         raise ValueError("targets must contain at least one target column")
+
+    # Prevent target leakage automatically
+    features = [f for f in features if f not in targets]
 
     train_df, valid_df = split_by_time(df, date_col=date_col, valid_fraction=valid_fraction)
     X_train = train_df[features]
@@ -129,6 +139,9 @@ def fit_models_full(
         raise ValueError("features must not be empty")
     if not targets:
         raise ValueError("targets must contain at least one target column")
+
+    # Prevent target leakage automatically
+    features = [f for f in features if f not in targets]
 
     if use_numpy:
         X: pd.DataFrame | np.ndarray = df[features].to_numpy(dtype="float64")
