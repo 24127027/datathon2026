@@ -19,7 +19,7 @@ from ..models.sklearn_models import SklearnRegressorConfig, SklearnRegressorWrap
 @dataclass
 class TrainConfig:
     data_root: str = "data/datathon-2026-round-1"
-    date_col: str = "Date"
+    date_col: str = "date"
     target_col: str = "Revenue"
     model_type: str = "random_forest"
     valid_fraction: float = 0.2
@@ -79,7 +79,7 @@ def train_validate_models(
     feature_cols: list[str],
     targets: Mapping[str, pd.Series],
     model_config: SklearnRegressorConfig,
-    date_col: str = "Date",
+    date_col: str = "date",
     valid_fraction: float = 0.2,
 ) -> dict[str, object]:
     """Train one model per target on a time split and return validation metrics."""

@@ -149,4 +149,5 @@ def load_sales(
 ) -> pd.DataFrame:
 	csv_path = Path(data_root) / "analytical" / "sales.csv"
 	date_cols = ["Date"] if parse_dates else None
-	return pd.read_csv(csv_path, parse_dates=date_cols)
+	sales_df = pd.read_csv(csv_path, parse_dates=date_cols)
+	return sales_df.rename(columns={"Date": "date"})

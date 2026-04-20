@@ -107,7 +107,7 @@ def add_column(
 
 def list_feature_columns(
     df: pd.DataFrame,
-    date_col: str = "Date",
+    date_col: str = "date",
     target_col: str = "Revenue",
 ) -> dict[str, list[str]]:
     """List feature columns by common forecasting groups for notebook inspection."""
@@ -146,7 +146,7 @@ def list_feature_columns(
 def build_feature_matrix(
     sales_df: pd.DataFrame,
     web_traffic_df: pd.DataFrame | None = None,
-    date_col: str = "Date",
+    date_col: str = "date",
     target_col: str = "Revenue",
     extra_drop_cols: Iterable[str] = ("COGS",),
     lag_values: tuple[int, ...] = (1, 7, 14, 28),
@@ -172,7 +172,7 @@ def build_feature_matrix(
 def build_feature_table(
     sales_df: pd.DataFrame,
     web_traffic_df: pd.DataFrame | None = None,
-    date_col: str = "Date",
+    date_col: str = "date",
     target_col: str = "Revenue",
     lag_values: tuple[int, ...] = (1, 7, 14, 28),
     rolling_windows: tuple[int, ...] = (7, 14, 28),
@@ -207,7 +207,7 @@ def build_daily_one_row_per_day(
     web_traffic_df: pd.DataFrame,
     inventory_df: pd.DataFrame,
     sales_df: pd.DataFrame,
-    sales_date_col: str = "Date",
+    sales_date_col: str = "date",
 ) -> pd.DataFrame:
     """Build a single daily table with exactly one row per calendar day.
 

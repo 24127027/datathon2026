@@ -40,7 +40,7 @@ def prepare_submission(
 
     submission = pd.DataFrame(
         {
-            "Date": dates.strftime("%Y-%m-%d"),
+            "date": dates.strftime("%Y-%m-%d"),
             "Revenue": revenue_series,
             "COGS": cogs_series,
         }

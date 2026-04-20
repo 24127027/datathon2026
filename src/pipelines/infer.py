@@ -16,7 +16,7 @@ def run_inference_pipeline(
     model_path: str | Path,
     sales_df: pd.DataFrame,
     web_traffic_df: pd.DataFrame | None = None,
-    date_col: str = "Date",
+    date_col: str = "date",
     target_col: str = "Revenue",
     selected_columns_path: str | Path | None = None,
 ) -> pd.DataFrame:

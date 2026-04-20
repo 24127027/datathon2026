@@ -12,7 +12,7 @@ class SeasonalDateRegressor:
 	- No other feature columns are required.
 	"""
 
-	def __init__(self, date_col: str = "Date") -> None:
+	def __init__(self, date_col: str = "date") -> None:
 		self.date_col = date_col
 		self.global_mean_: float | None = None
 		self.day_of_year_mean_: dict[int, float] = {}
