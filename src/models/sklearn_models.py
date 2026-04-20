@@ -19,6 +19,7 @@ class SklearnRegressorConfig:
         "random_forest",
         "catboost",
         "lightgbm",
+        "xgboost",
     ] = "random_forest"
     random_state: int = 42
     n_estimators: int = 400
@@ -61,6 +62,17 @@ class SklearnRegressorWrapper:
                 random_state=config.random_state,
                 n_jobs=-1,
             )
+        if config.model_type == "xgboost":
+            from xgboost import XGBRegressor
+
+            return XGBRegressor(
+                n_estimators=config.n_estimators,
+                max_depth=6 if config.max_depth is None else config.max_depth,
+                learning_rate=config.learning_rate,
+                random_state=config.random_state,
+                n_jobs=-1,
+                objective="reg:squarederror",
+            )
         if config.model_type == "random_forest":
             return RandomForestRegressor(
                 n_estimators=config.n_estimators,
@@ -71,7 +83,7 @@ class SklearnRegressorWrapper:
         raise ValueError(
             "Unsupported model_type: "
             f"{config.model_type}. Use one of: "
-            "linear, ridge, gradient_boosting, random_forest, catboost, lightgbm"
+            "gradient_boosting, random_forest, catboost, lightgbm, xgboost"
         )
 
     def fit(self, X: pd.DataFrame | np.ndarray, y: pd.Series | np.ndarray) -> "SklearnRegressorWrapper":
