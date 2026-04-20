@@ -76,30 +76,29 @@ def build_revenue_ratio_targets(
 
 def train_validate_models(
     df: pd.DataFrame,
-    feature_cols: list[str],
-    targets: Mapping[str, pd.Series],
+    features: list[str],
+    targets: list[str],
     model_config: SklearnRegressorConfig,
     date_col: str = "date",
     valid_fraction: float = 0.2,
 ) -> dict[str, object]:
     """Train one model per target on a time split and return validation metrics."""
-    if not feature_cols:
-        raise ValueError("feature_cols must not be empty")
+    if not features:
+        raise ValueError("features must not be empty")
     if not targets:
-        raise ValueError("targets must contain at least one target series")
+        raise ValueError("targets must contain at least one target column")
 
     train_df, valid_df = split_by_time(df, date_col=date_col, valid_fraction=valid_fraction)
-    X_train = train_df[feature_cols]
-    X_valid = valid_df[feature_cols]
+    X_train = train_df[features]
+    X_valid = valid_df[features]
 
     models: dict[str, SklearnRegressorWrapper] = {}
     preds: dict[str, pd.Series] = {}
     metrics: dict[str, dict[str, float]] = {}
 
-    for target_name, target_values in targets.items():
-        aligned = target_values.reindex(df.index)
-        y_train = aligned.loc[train_df.index]
-        y_valid = aligned.loc[valid_df.index]
+    for target_name in targets:
+        y_train = train_df[target_name]
+        y_valid = valid_df[target_name]
 
         model = SklearnRegressorWrapper(model_config)
         model.fit(X_train, y_train)
@@ -120,25 +119,25 @@ def train_validate_models(
 
 def fit_models_full(
     df: pd.DataFrame,
-    feature_cols: list[str],
-    targets: Mapping[str, pd.Series],
+    features: list[str],
+    targets: list[str],
     model_config: SklearnRegressorConfig,
     use_numpy: bool = True,
 ) -> dict[str, SklearnRegressorWrapper]:
     """Fit one model per target on full data for final submission inference."""
-    if not feature_cols:
-        raise ValueError("feature_cols must not be empty")
+    if not features:
+        raise ValueError("features must not be empty")
     if not targets:
-        raise ValueError("targets must contain at least one target series")
+        raise ValueError("targets must contain at least one target column")
 
     if use_numpy:
-        X: pd.DataFrame | np.ndarray = df[feature_cols].to_numpy(dtype="float64")
+        X: pd.DataFrame | np.ndarray = df[features].to_numpy(dtype="float64")
     else:
-        X = df[feature_cols]
+        X = df[features]
 
     models: dict[str, SklearnRegressorWrapper] = {}
-    for target_name, target_values in targets.items():
-        y = target_values.reindex(df.index)
+    for target_name in targets:
+        y = df[target_name]
         y_fit: pd.Series | np.ndarray = y.to_numpy(dtype="float64") if use_numpy else y
 
         model = SklearnRegressorWrapper(model_config)
