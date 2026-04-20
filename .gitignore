@@ -209,3 +209,5 @@ __marimo__/
 *.md
 !.prompts/
 submissions/
+
+results/
