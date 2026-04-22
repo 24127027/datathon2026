@@ -10,4 +10,6 @@ dependencies = [
     "numpy>=2.4.4",
     "pandas>=3.0.2",
     "scikit-learn>=1.7.2",
+    "seaborn>=0.13.2",
+    "shap>=0.51.0",
 ]
