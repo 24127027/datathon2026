@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -105,6 +106,62 @@ def add_column(
     return out
 
 
+def add_temporal_transforms(
+    df: pd.DataFrame,
+    date_col: str,
+    lags: Iterable[int] = (1, 7, 14, 28),
+    rolling_windows: Iterable[int] = (7, 14, 28),
+    cols: Iterable[str] | None = None,
+) -> pd.DataFrame:
+    """Add lag/rolling and related leakage-safe temporal transforms for numeric columns.
+
+    Args:
+        cols: Optional whitelist of columns to apply transforms to.
+              If None, all numeric columns (except date_col) are used.
+    """
+    if date_col not in df.columns:
+        raise ValueError(f"Missing required date column: {date_col}")
+
+    out = df.copy().sort_values(date_col).reset_index(drop=True)
+    valid_lags = sorted({lag for lag in lags if lag > 0})
+    valid_windows = sorted({window for window in rolling_windows if window > 1})
+    if not valid_lags and not valid_windows:
+        return out
+
+    all_numeric = [
+        col
+        for col in out.columns
+        if col != date_col and pd.api.types.is_numeric_dtype(out[col])
+    ]
+    if cols is not None:
+        numeric_cols = [c for c in cols if c in out.columns and pd.api.types.is_numeric_dtype(out[c])]
+    else:
+        numeric_cols = all_numeric
+    if not numeric_cols:
+        return out
+
+    generated: dict[str, pd.Series] = {}
+    for col in numeric_cols:
+        series = out[col]
+        for lag in valid_lags:
+            generated[f"{col}_lag_{lag}"] = series.shift(lag)
+
+        shifted = series.shift(1)
+        for window in valid_windows:
+            generated[f"{col}_roll_mean_{window}"] = shifted.rolling(window).mean()
+            generated[f"{col}_roll_std_{window}"] = shifted.rolling(window).std()
+
+        # day-over-day and week-over-week momentum (leak-safe: both use shift>=1)
+        generated[f"{col}_diff_1"] = series.shift(1) - series.shift(2)
+        generated[f"{col}_pct_change_1"] = (
+            series.shift(1) / series.shift(2).replace(0, pd.NA)
+        ) - 1.0
+
+    if generated:
+        out = pd.concat([out, pd.DataFrame(generated, index=out.index)], axis=1)
+    return out
+
+
 def list_feature_columns(
     df: pd.DataFrame,
     date_col: str = "date",
@@ -201,6 +258,191 @@ def build_feature_table(
     return features
 
 
+def _require_cols(df: pd.DataFrame, cols: set[str], label: str) -> None:
+    """Raise ValueError listing any columns missing from df."""
+    missing = cols.difference(df.columns)
+    if missing:
+        raise ValueError(f"{label} missing columns: {sorted(missing)}")
+
+
+def _safe_ratio(frame: pd.DataFrame, numerator: str, denominator: str) -> pd.Series:
+    return (frame[numerator] / frame[denominator].replace(0, pd.NA)).fillna(0.0)
+
+
+def _category_share_daily(
+    frame: pd.DataFrame,
+    date_col: str,
+    cat_col: str,
+    prefix: str,
+    max_unique: int = 8,
+) -> pd.DataFrame:
+    """Return a date-indexed table of daily share per top-N category value."""
+    if cat_col not in frame.columns:
+        return pd.DataFrame(columns=["date"])
+    tmp = frame[[date_col, cat_col]].dropna(subset=[date_col]).copy()
+    if tmp.empty:
+        return pd.DataFrame(columns=["date"])
+
+    def _norm(v: Any) -> str:
+        t = str(v).strip().lower()
+        if t in {"", "nan", "none", "<na>"}:
+            return "unknown"
+        n = "".join(ch if ch.isalnum() else "_" for ch in t)
+        while "__" in n:
+            n = n.replace("__", "_")
+        return n.strip("_") or "unknown"
+
+    tmp[cat_col] = tmp[cat_col].map(_norm)
+    top = tmp[cat_col].value_counts().head(max_unique).index
+    if top.empty:
+        return pd.DataFrame(columns=["date"])
+    tmp[cat_col] = tmp[cat_col].where(tmp[cat_col].isin(top), "other")
+    counts = tmp.groupby([date_col, cat_col]).size().unstack(fill_value=0).reset_index()
+    val_cols = [c for c in counts.columns if c != date_col]
+    total = counts[val_cols].sum(axis=1).replace(0, pd.NA)
+    for c in val_cols:
+        counts[f"{prefix}_share_{c}"] = (counts[c] / total).fillna(0.0)
+    keep = [date_col, *[f"{prefix}_share_{c}" for c in val_cols]]
+    return counts[keep].rename(columns={date_col: "date"})
+
+
+def _merge_mix(parts: list[pd.DataFrame]) -> pd.DataFrame:
+    """Outer-merge a list of category-share DataFrames on 'date'."""
+    out: pd.DataFrame = pd.DataFrame(columns=["date"])
+    for part in parts:
+        if not part.empty:
+            out = part if out.empty else out.merge(part, on="date", how="outer")
+    return out
+
+
+# Ratio feature definitions: (output_col, numerator_col, denominator_col).
+# All columns must exist before _add_business_features is called.
+_RATIO_PAIRS: list[tuple[str, str, str]] = [
+    ("gross_margin_ratio",       "gross_margin",           "Revenue"),
+    ("aov_revenue",              "Revenue",                "orders_count"),
+    ("units_per_order",          "quantity_sold",          "orders_count"),
+    ("discount_rate",            "discount_total",         "gross_merch_value"),
+    ("effective_discount_rate",  "discount_total",         "list_merch_value"),
+    ("refund_rate",              "refund_amount_total",    "net_merch_value"),
+    ("returns_event_rate",       "returned_items_events",  "orders_count"),
+    ("returns_quantity_rate",    "returned_items_quantity","quantity_sold"),
+    ("refund_to_revenue_rate",   "returned_refund_value",  "Revenue"),
+    ("pages_per_session",        "page_views",             "sessions"),
+    ("sessions_per_visitor",     "sessions",               "unique_visitors"),
+    ("pages_per_visitor",        "page_views",             "unique_visitors"),
+    ("revenue_per_session",      "Revenue",                "sessions"),
+    ("conversion_rate",          "orders_count",           "sessions"),
+    ("delivery_throughput_rate", "delivered_orders_count", "orders_count"),
+    ("checkout_efficiency",      "delivered_orders",       "orders_count"),
+    ("aov_true",                 "net_merch_value",        "delivered_orders"),
+    ("avg_item_price",           "net_merch_value",        "quantity_sold"),
+    ("basket_size",              "quantity_sold",          "delivered_orders"),
+    ("orders_per_customer",      "orders_count",           "customers_count"),
+    ("product_diversity",        "unique_products_sold",   "quantity_sold"),
+    ("refund_per_order",         "refund_amount_total",    "orders_count"),
+    ("return_items_ratio",       "return_quantity_total",  "quantity_sold"),
+    ("discount_per_order",       "discount_total",         "orders_count"),
+    ("discount_efficiency",      "net_merch_value",        "discount_total"),
+    ("stackable_promo_rate",     "stackable_promo_lines",  "items_count"),
+    ("demand_supply_ratio",      "quantity_sold",          "inv_stock_on_hand"),
+    ("inventory_pressure",       "inv_units_sold",         "inv_units_received"),
+    ("inventory_turnover_proxy", "items_cogs_total",       "inv_stock_on_hand"),
+    ("review_coverage_rate",     "reviews_count",          "delivered_orders_count"),
+]
+
+# Columns that must exist before _add_business_features; defaulted to 0 if absent.
+_REQUIRED_ZERO_DEFAULTS: list[str] = [
+    "orders_count", "customers_count", "delivered_orders", "cancelled_orders", "returned_orders",
+    "sessions", "unique_visitors", "page_views", "quantity_sold",
+    "gross_merch_value", "discount_total", "net_merch_value", "list_merch_value",
+    "refund_amount_total", "return_quantity_total", "rating_mean",
+    "promo_1_usage_count", "promo_2_usage_count", "bounce_rate", "avg_session_duration_sec",
+    "unique_products_sold", "inv_stockout_products", "inv_stock_on_hand",
+    "inv_units_sold", "inv_units_received", "items_cogs_total",
+    "returned_items_events", "returned_items_quantity", "returned_refund_value",
+    "reviews_count", "reviews_rating_mean", "shipped_orders_count", "delivered_orders_count",
+    "same_day_ship_orders", "same_day_delivery_orders", "weekend_orders",
+    "promo_1_active_lines", "promo_2_active_lines", "stackable_promo_lines",
+]
+
+
+def _add_business_features(daily: pd.DataFrame) -> pd.DataFrame:
+    """Compute all engineered business metrics from the merged daily table."""
+    out = daily.copy()
+    out["gross_margin"] = out["Revenue"] - out["COGS"]
+    for new_col, num, den in _RATIO_PAIRS:
+        out[new_col] = _safe_ratio(out, num, den)
+
+    out["returning_users"] = (out["sessions"] - out["unique_visitors"]).clip(lower=0)
+    out["returning_rate"] = _safe_ratio(out, "returning_users", "sessions")
+    # Guard engagement metrics on days with actual traffic to avoid
+    # misleading values when bounce_rate/avg_session_duration_sec are
+    # zero-filled due to missing source data.
+    _has_traffic = out["sessions"] > 0
+    out["engagement_score"] = (
+        out["pages_per_session"]
+        * (1 - out["bounce_rate"])
+        * np.log1p(out["avg_session_duration_sec"].clip(lower=0))
+    ).where(_has_traffic, 0.0).fillna(0.0)
+    out["quality_sessions"] = (
+        (out["sessions"] * (1 - out["bounce_rate"])).where(_has_traffic, 0.0).fillna(0.0)
+    )
+    out["loyal_engagement"] = (out["returning_rate"] * out["engagement_score"]).fillna(0.0)
+    out["order_loss_rate"] = (
+        (out["cancelled_orders"] + out["returned_orders"])
+        / out["orders_count"].replace(0, pd.NA)
+    ).fillna(0.0)
+    # Prefer reviews_rating_mean (by review date) over rating_mean (by order date)
+    # when both are available, as it reflects post-purchase satisfaction.
+    _rating_col = "reviews_rating_mean" if "reviews_rating_mean" in out.columns else "rating_mean"
+    out["satisfaction_demand"] = (out["delivered_orders"] * out[_rating_col]).fillna(0.0)
+    out["promo_intensity"] = (
+        (out["promo_1_usage_count"] + out["promo_2_usage_count"])
+        / out["orders_count"].replace(0, pd.NA)
+    ).fillna(0.0)
+    out["promo_active_line_rate"] = (
+        (out["promo_1_active_lines"] + out["promo_2_active_lines"])
+        / out["items_count"].replace(0, pd.NA)
+    ).fillna(0.0)
+    out["engaged_sessions"] = (out["sessions"] * (1 - out["bounce_rate"])).fillna(0.0)
+    out["stock_availability"] = (1 - _safe_ratio(out, "inv_stockout_products", "unique_products_sold")).fillna(0.0)
+    out["inventory_gap"] = (out["inv_units_received"] - out["quantity_sold"]).fillna(0.0)
+    out["revenue_driver"] = (
+        out["sessions"] * out["conversion_rate"] * out["aov_true"]
+    ).fillna(0.0)
+    out["quality_revenue"] = (
+        out["net_merch_value"] * (1 - out["refund_rate"]) * (1 - out["cancel_rate_orders"])
+    ).fillna(0.0)
+    out["demand_strength"] = (
+        out["quantity_sold"] * (1 - out["return_items_ratio"])
+    ).fillna(0.0)
+    out["review_sentiment_score"] = (
+        out["reviews_rating_mean"] * np.log1p(out["reviews_count"].clip(lower=0))
+    ).fillna(0.0)
+    out["revenue_to_cogs_items_gap"] = (out["Revenue"] - out["items_cogs_total"]).fillna(0.0)
+    return out
+
+
+def _add_calendar_cyclical_features(daily: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
+    out = daily.copy()
+    out[date_col] = pd.to_datetime(out[date_col])
+    out["year"] = out[date_col].dt.year
+    out["month"] = out[date_col].dt.month
+    out["day"] = out[date_col].dt.day
+    out["day_of_week"] = out[date_col].dt.dayofweek
+    out["day_of_year"] = out[date_col].dt.dayofyear
+    out["week_of_year"] = out[date_col].dt.isocalendar().week.astype("Int64")
+    out["is_weekend"] = (out["day_of_week"] >= 5).astype(int)
+
+    out["dow_sin"] = np.sin(2 * np.pi * out["day_of_week"] / 7)
+    out["dow_cos"] = np.cos(2 * np.pi * out["day_of_week"] / 7)
+    out["month_sin"] = np.sin(2 * np.pi * (out["month"] - 1) / 12)
+    out["month_cos"] = np.cos(2 * np.pi * (out["month"] - 1) / 12)
+    out["doy_sin"] = np.sin(2 * np.pi * (out["day_of_year"] - 1) / 365.25)
+    out["doy_cos"] = np.cos(2 * np.pi * (out["day_of_year"] - 1) / 365.25)
+    return out
+
+
 def build_daily_one_row_per_day(
     orders_df: pd.DataFrame,
     order_items_df: pd.DataFrame,
@@ -208,39 +450,19 @@ def build_daily_one_row_per_day(
     inventory_df: pd.DataFrame,
     sales_df: pd.DataFrame,
     sales_date_col: str = "date",
+    lag_values: tuple[int, ...] = (1, 7, 14, 28),
+    rolling_windows: tuple[int, ...] = (7, 14, 28),
 ) -> pd.DataFrame:
     """Build a single daily table with exactly one row per calendar day.
 
     This function is designed to match the output schema produced by
     `load_orders`, `load_order_items`, `load_web_traffic`, `load_inventory`, and `load_sales`.
     """
-    required_orders = {"order_id", "order_date", "customer_id"}
-    missing_orders = required_orders.difference(orders_df.columns)
-    if missing_orders:
-        raise ValueError(f"orders_df missing required columns: {sorted(missing_orders)}")
-
-    required_items = {"order_id", "quantity", "unit_price", "discount_amount"}
-    missing_items = required_items.difference(order_items_df.columns)
-    if missing_items:
-        raise ValueError(f"order_items_df missing required columns: {sorted(missing_items)}")
-
-    required_web = {"date", "sessions", "unique_visitors", "page_views"}
-    missing_web = required_web.difference(web_traffic_df.columns)
-    if missing_web:
-        raise ValueError(f"web_traffic_df missing required columns: {sorted(missing_web)}")
-
-    required_inventory = {"snapshot_date", "stock_on_hand", "units_received", "units_sold"}
-    missing_inventory = required_inventory.difference(inventory_df.columns)
-    if missing_inventory:
-        raise ValueError(f"inventory_df missing required columns: {sorted(missing_inventory)}")
-
-    required_sales = {sales_date_col, "Revenue", "COGS"}
-    missing_sales = required_sales.difference(sales_df.columns)
-    if missing_sales:
-        raise ValueError(f"sales_df missing required columns: {sorted(missing_sales)}")
-
-    def _existing(cols: Iterable[str], frame: pd.DataFrame) -> list[str]:
-        return [col for col in cols if col in frame.columns]
+    _require_cols(orders_df,      {"order_id", "order_date", "customer_id"},                "orders_df")
+    _require_cols(order_items_df, {"order_id", "quantity", "unit_price", "discount_amount"}, "order_items_df")
+    _require_cols(web_traffic_df, {"date", "sessions", "unique_visitors", "page_views"},     "web_traffic_df")
+    _require_cols(inventory_df,   {"snapshot_date", "stock_on_hand", "units_received", "units_sold"}, "inventory_df")
+    _require_cols(sales_df,       {sales_date_col, "Revenue", "COGS"},                      "sales_df")
 
     sales_daily = sales_df.copy()
     sales_daily["date"] = pd.to_datetime(sales_daily[sales_date_col], errors="coerce")
@@ -254,6 +476,15 @@ def build_daily_one_row_per_day(
     orders_tmp = orders_df.copy()
     orders_tmp["order_date"] = pd.to_datetime(orders_tmp["order_date"], errors="coerce")
     orders_tmp = orders_tmp.dropna(subset=["order_date"])
+
+    if "signup_date" in orders_tmp.columns:
+        orders_tmp["signup_date"] = pd.to_datetime(orders_tmp["signup_date"], errors="coerce")
+        orders_tmp["customer_tenure_days"] = (
+            orders_tmp["order_date"] - orders_tmp["signup_date"]
+        ).dt.days.clip(lower=0)
+
+    orders_tmp["order_weekend_flag"] = (orders_tmp["order_date"].dt.dayofweek >= 5).astype(int)
+
     if "order_status" in orders_tmp.columns:
         normalized_status = orders_tmp["order_status"].astype(str).str.lower().str.strip()
         orders_tmp["is_returned"] = (normalized_status == "returned").astype(int)
@@ -266,12 +497,24 @@ def build_daily_one_row_per_day(
         orders_tmp["ship_date"] = pd.to_datetime(orders_tmp["ship_date"], errors="coerce")
         orders_tmp["delivery_date"] = pd.to_datetime(orders_tmp["delivery_date"], errors="coerce")
         orders_tmp["delivered_flag"] = orders_tmp["delivery_date"].notna().astype(int)
+        orders_tmp["same_day_ship_flag"] = (
+            orders_tmp["ship_date"] == orders_tmp["order_date"]
+        ).astype(int)
+        orders_tmp["same_day_delivery_flag"] = (
+            orders_tmp["delivery_date"] == orders_tmp["order_date"]
+        ).astype(int)
         orders_tmp["shipping_lead_days"] = (
             orders_tmp["delivery_date"] - orders_tmp["ship_date"]
         ).dt.days
+        orders_tmp["fulfillment_days"] = (
+            orders_tmp["delivery_date"] - orders_tmp["order_date"]
+        ).dt.days
     else:
         orders_tmp["delivered_flag"] = 0
+        orders_tmp["same_day_ship_flag"] = 0
+        orders_tmp["same_day_delivery_flag"] = 0
         orders_tmp["shipping_lead_days"] = pd.NA
+        orders_tmp["fulfillment_days"] = pd.NA
 
     orders_agg: dict[str, tuple[str, str]] = {
         "orders_count": ("order_id", "nunique"),
@@ -288,6 +531,20 @@ def build_daily_one_row_per_day(
         orders_agg["shipping_fee_total"] = ("shipping_fee", "sum")
     if "shipping_lead_days" in orders_tmp.columns:
         orders_agg["shipping_lead_days_mean"] = ("shipping_lead_days", "mean")
+        orders_agg["shipping_lead_days_p90"] = ("shipping_lead_days", lambda s: s.quantile(0.9))
+    if "fulfillment_days" in orders_tmp.columns:
+        orders_agg["fulfillment_days_mean"] = ("fulfillment_days", "mean")
+    if "payment_value" in orders_tmp.columns:
+        orders_agg["payment_value_mean"] = ("payment_value", "mean")
+        orders_agg["payment_value_std"] = ("payment_value", "std")
+        orders_agg["payment_value_median"] = ("payment_value", "median")
+    if "customer_tenure_days" in orders_tmp.columns:
+        orders_agg["customer_tenure_days_mean"] = ("customer_tenure_days", "mean")
+        orders_agg["customer_tenure_days_p90"] = ("customer_tenure_days", lambda s: s.quantile(0.9))
+
+    orders_agg["weekend_orders"] = ("order_weekend_flag", "sum")
+    orders_agg["same_day_ship_orders"] = ("same_day_ship_flag", "sum")
+    orders_agg["same_day_delivery_orders"] = ("same_day_delivery_flag", "sum")
 
     orders_daily = orders_tmp.groupby("order_date", as_index=False).agg(**orders_agg)
     orders_daily = orders_daily.rename(columns={"order_date": "date"})
@@ -297,14 +554,80 @@ def build_daily_one_row_per_day(
     orders_daily["cancel_rate_orders"] = (
         orders_daily["cancelled_orders"] / orders_daily["orders_count"].replace(0, pd.NA)
     ).fillna(0.0)
+    orders_daily["weekend_order_share"] = (
+        orders_daily["weekend_orders"] / orders_daily["orders_count"].replace(0, pd.NA)
+    ).fillna(0.0)
+    orders_daily["same_day_ship_rate"] = (
+        orders_daily["same_day_ship_orders"] / orders_daily["orders_count"].replace(0, pd.NA)
+    ).fillna(0.0)
+    orders_daily["same_day_delivery_rate"] = (
+        orders_daily["same_day_delivery_orders"] / orders_daily["orders_count"].replace(0, pd.NA)
+    ).fillna(0.0)
+
+    order_mix_features = _merge_mix([
+        _category_share_daily(orders_tmp, "order_date", col, pfx)
+        for col, pfx in [
+            ("payment_method",     "payment_method"),
+            ("device_type",        "device"),
+            ("order_source",       "order_source"),
+            ("acquisition_channel","acquisition"),
+            ("gender",             "gender"),
+            ("age_group",          "age_group"),
+        ]
+    ])
 
     items_tmp = order_items_df.copy()
     items_tmp["line_gross"] = items_tmp["quantity"] * items_tmp["unit_price"]
     items_tmp["line_net"] = items_tmp["line_gross"] - items_tmp["discount_amount"]
+    if "price" in items_tmp.columns:
+        items_tmp["line_list_price"] = items_tmp["quantity"] * items_tmp["price"]
+    else:
+        items_tmp["line_list_price"] = items_tmp["line_gross"]
+
+    if "cogs" in items_tmp.columns:
+        items_tmp["line_cogs"] = items_tmp["quantity"] * items_tmp["cogs"]
+    else:
+        items_tmp["line_cogs"] = 0.0
 
     order_dates = orders_tmp[["order_id", "order_date"]].drop_duplicates("order_id")
     items_with_dates = items_tmp.merge(order_dates, on="order_id", how="left")
     items_with_dates = items_with_dates.dropna(subset=["order_date"])
+
+    for promo_date_col in ["start_date_promo_1", "end_date_promo_1", "start_date_promo_2", "end_date_promo_2"]:
+        if promo_date_col in items_with_dates.columns:
+            items_with_dates[promo_date_col] = pd.to_datetime(items_with_dates[promo_date_col], errors="coerce")
+
+    if {"promo_id", "start_date_promo_1", "end_date_promo_1"}.issubset(items_with_dates.columns):
+        items_with_dates["promo_1_active_flag"] = (
+            items_with_dates["promo_id"].notna()
+            & (items_with_dates["order_date"] >= items_with_dates["start_date_promo_1"])
+            & (items_with_dates["order_date"] <= items_with_dates["end_date_promo_1"])
+        ).astype(int)
+    else:
+        items_with_dates["promo_1_active_flag"] = 0
+
+    if {"promo_id_2", "start_date_promo_2", "end_date_promo_2"}.issubset(items_with_dates.columns):
+        items_with_dates["promo_2_active_flag"] = (
+            items_with_dates["promo_id_2"].notna()
+            & (items_with_dates["order_date"] >= items_with_dates["start_date_promo_2"])
+            & (items_with_dates["order_date"] <= items_with_dates["end_date_promo_2"])
+        ).astype(int)
+    else:
+        items_with_dates["promo_2_active_flag"] = 0
+
+    if "stackable_flag_promo_1" in items_with_dates.columns:
+        items_with_dates["stackable_flag_promo_1"] = items_with_dates["stackable_flag_promo_1"].fillna(0).astype(float)
+    else:
+        items_with_dates["stackable_flag_promo_1"] = 0.0
+    if "stackable_flag_promo_2" in items_with_dates.columns:
+        items_with_dates["stackable_flag_promo_2"] = items_with_dates["stackable_flag_promo_2"].fillna(0).astype(float)
+    else:
+        items_with_dates["stackable_flag_promo_2"] = 0.0
+    # A line item is stackable if *either* promo slot is stackable.
+    items_with_dates["_any_stackable"] = (
+        (items_with_dates["stackable_flag_promo_1"] > 0)
+        | (items_with_dates["stackable_flag_promo_2"] > 0)
+    ).astype(float)
 
     items_agg: dict[str, tuple[str, str]] = {
         "items_count": ("order_id", "size"),
@@ -312,7 +635,14 @@ def build_daily_one_row_per_day(
         "gross_merch_value": ("line_gross", "sum"),
         "discount_total": ("discount_amount", "sum"),
         "net_merch_value": ("line_net", "sum"),
+        "list_merch_value": ("line_list_price", "sum"),
+        "items_cogs_total": ("line_cogs", "sum"),
         "unique_products_sold": ("product_id", "nunique"),
+        "unit_price_mean": ("unit_price", "mean"),
+        "unit_price_std": ("unit_price", "std"),
+        "promo_1_active_lines": ("promo_1_active_flag", "sum"),
+        "promo_2_active_lines": ("promo_2_active_flag", "sum"),
+        "stackable_promo_lines": ("_any_stackable", "sum"),  # counts lines where promo_1 OR promo_2 is stackable
     }
     if "refund_amount" in items_with_dates.columns:
         items_agg["refund_amount_total"] = ("refund_amount", "sum")
@@ -324,9 +654,61 @@ def build_daily_one_row_per_day(
         items_agg["promo_1_usage_count"] = ("promo_id", lambda s: s.notna().sum())
     if "promo_id_2" in items_with_dates.columns:
         items_agg["promo_2_usage_count"] = ("promo_id_2", lambda s: s.notna().sum())
+    if "discount_value_promo_1" in items_with_dates.columns:
+        items_agg["promo_1_discount_value_mean"] = ("discount_value_promo_1", "mean")
+    if "discount_value_promo_2" in items_with_dates.columns:
+        items_agg["promo_2_discount_value_mean"] = ("discount_value_promo_2", "mean")
+    if "min_order_value_promo_1" in items_with_dates.columns:
+        items_agg["promo_1_min_order_value_mean"] = ("min_order_value_promo_1", "mean")
+    if "min_order_value_promo_2" in items_with_dates.columns:
+        items_agg["promo_2_min_order_value_mean"] = ("min_order_value_promo_2", "mean")
 
     items_daily = items_with_dates.groupby("order_date", as_index=False).agg(**items_agg)
     items_daily = items_daily.rename(columns={"order_date": "date"})
+
+    item_mix_features = _merge_mix([
+        _category_share_daily(items_with_dates, "order_date", col, pfx)
+        for col, pfx in [
+            ("category",            "item_category"),
+            ("segment",             "item_segment"),
+            ("promo_type_promo_1",  "promo_type_1"),
+            ("promo_type_promo_2",  "promo_type_2"),
+            ("promo_channel_promo_1","promo_channel_1"),
+            ("promo_channel_promo_2","promo_channel_2"),
+        ]
+    ])
+
+    returns_daily = pd.DataFrame(columns=["date"])
+    if {"return_date", "refund_amount", "return_quantity"}.issubset(items_with_dates.columns):
+        returns_tmp = items_with_dates.copy()
+        returns_tmp["return_date"] = pd.to_datetime(returns_tmp["return_date"], errors="coerce")
+        returns_tmp = returns_tmp.dropna(subset=["return_date"])
+        if not returns_tmp.empty:
+            returns_daily = (
+                returns_tmp.groupby("return_date", as_index=False)
+                .agg(
+                    returned_items_events=("order_id", "size"),
+                    returned_items_quantity=("return_quantity", "sum"),
+                    returned_refund_value=("refund_amount", "sum"),
+                )
+                .rename(columns={"return_date": "date"})
+            )
+
+    reviews_daily = pd.DataFrame(columns=["date"])
+    if {"review_date", "rating"}.issubset(items_with_dates.columns):
+        reviews_tmp = items_with_dates.copy()
+        reviews_tmp["review_date"] = pd.to_datetime(reviews_tmp["review_date"], errors="coerce")
+        reviews_tmp = reviews_tmp.dropna(subset=["review_date"])
+        if not reviews_tmp.empty:
+            reviews_daily = (
+                reviews_tmp.groupby("review_date", as_index=False)
+                .agg(
+                    reviews_count=("order_id", "size"),
+                    reviews_rating_mean=("rating", "mean"),
+                    reviews_rating_std=("rating", "std"),
+                )
+                .rename(columns={"review_date": "date"})
+            )
 
     web_tmp = web_traffic_df.copy()
     web_tmp["date"] = pd.to_datetime(web_tmp["date"], errors="coerce")
@@ -340,6 +722,8 @@ def build_daily_one_row_per_day(
         if optional_col in web_tmp.columns:
             web_agg[optional_col] = (optional_col, "mean")
     web_daily = web_tmp.groupby("date", as_index=False).agg(**web_agg)
+
+    web_source_mix = _category_share_daily(web_tmp, "date", "traffic_source", "traffic_source")
 
     inv_tmp = inventory_df.copy()
     inv_tmp["snapshot_date"] = pd.to_datetime(inv_tmp["snapshot_date"], errors="coerce")
@@ -370,9 +754,42 @@ def build_daily_one_row_per_day(
     inventory_daily = inv_tmp.groupby("snapshot_date", as_index=False).agg(**inventory_agg)
     inventory_daily = inventory_daily.rename(columns={"snapshot_date": "date"})
 
+    ship_daily = pd.DataFrame(columns=["date"])
+    if "ship_date" in orders_tmp.columns:
+        ship_daily_tmp = orders_tmp.dropna(subset=["ship_date"])
+        if not ship_daily_tmp.empty:
+            ship_daily = (
+                ship_daily_tmp.groupby("ship_date", as_index=False)
+                .agg(
+                    shipped_orders_count=("order_id", "nunique"),
+                    shipped_fee_total=("shipping_fee", "sum") if "shipping_fee" in ship_daily_tmp.columns else ("order_id", "size"),
+                )
+                .rename(columns={"ship_date": "date"})
+            )
+
+    delivery_daily = pd.DataFrame(columns=["date"])
+    if "delivery_date" in orders_tmp.columns:
+        delivery_daily_tmp = orders_tmp.dropna(subset=["delivery_date"])
+        if not delivery_daily_tmp.empty:
+            delivery_daily = (
+                delivery_daily_tmp.groupby("delivery_date", as_index=False)
+                .agg(
+                    delivered_orders_count=("order_id", "nunique"),
+                )
+                .rename(columns={"delivery_date": "date"})
+            )
+
     date_series: list[pd.Series] = [sales_daily["date"], orders_daily["date"], web_daily["date"], inventory_daily["date"]]
     if not items_daily.empty:
         date_series.append(items_daily["date"])
+    if not returns_daily.empty:
+        date_series.append(returns_daily["date"])
+    if not reviews_daily.empty:
+        date_series.append(reviews_daily["date"])
+    if not ship_daily.empty:
+        date_series.append(ship_daily["date"])
+    if not delivery_daily.empty:
+        date_series.append(delivery_daily["date"])
     all_dates = pd.concat(date_series, ignore_index=True).dropna()
     if all_dates.empty:
         raise ValueError("No valid dates found across all inputs")
@@ -391,64 +808,69 @@ def build_daily_one_row_per_day(
         base_calendar.merge(sales_daily, on="date", how="left")
         .merge(orders_daily, on="date", how="left")
         .merge(items_daily, on="date", how="left")
+        .merge(order_mix_features, on="date", how="left")
+        .merge(item_mix_features, on="date", how="left")
+        .merge(returns_daily, on="date", how="left")
+        .merge(reviews_daily, on="date", how="left")
+        .merge(ship_daily, on="date", how="left")
+        .merge(delivery_daily, on="date", how="left")
         .merge(web_daily, on="date", how="left")
+        .merge(web_source_mix, on="date", how="left")
         .merge(inventory_daily, on="date", how="left")
         .sort_values("date")
         .reset_index(drop=True)
     )
 
-    for col in daily.columns:
-        if col == "date":
-            continue
-        if pd.api.types.is_numeric_dtype(daily[col]):
-            daily[col] = daily[col].fillna(0.0)
+    inventory_state_cols = [
+        col for col in daily.columns if col.startswith("inv_")
+    ]
+    if inventory_state_cols:
+        daily[inventory_state_cols] = daily[inventory_state_cols].ffill()
+
+    numeric_cols = daily.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) > 0:
+        daily[numeric_cols] = daily[numeric_cols].fillna(0.0)
 
     # Ratios are computed after all numeric missing values have been filled.
-    for needed_col in [
-        "orders_count",
-        "sessions",
-        "quantity_sold",
-        "gross_merch_value",
-        "discount_total",
-        "refund_amount_total",
-    ]:
-        if needed_col not in daily.columns:
-            daily[needed_col] = 0.0
+    for col in _REQUIRED_ZERO_DEFAULTS:
+        if col not in daily.columns:
+            daily[col] = 0.0
 
-    daily["gross_margin"] = daily["Revenue"] - daily["COGS"]
-    daily["gross_margin_ratio"] = (
-        daily["gross_margin"] / daily["Revenue"].replace(0, pd.NA)
-    ).fillna(0.0)
-    daily["aov_revenue"] = (
-        daily["Revenue"] / daily["orders_count"].replace(0, pd.NA)
-    ).fillna(0.0)
-    daily["conversion_proxy"] = (
-        daily["orders_count"] / daily["sessions"].replace(0, pd.NA)
-    ).fillna(0.0)
-    daily["units_per_order"] = (
-        daily["quantity_sold"] / daily["orders_count"].replace(0, pd.NA)
-    ).fillna(0.0)
-    daily["discount_rate"] = (
-        daily["discount_total"] / daily["gross_merch_value"].replace(0, pd.NA)
-    ).fillna(0.0)
-    daily["refund_rate"] = (
-        daily["refund_amount_total"] / daily["net_merch_value"].replace(0, pd.NA)
-    ).fillna(0.0)
-    daily["pages_per_session"] = (
-        daily["page_views"] / daily["sessions"].replace(0, pd.NA)
-    ).fillna(0.0)
-    daily["sessions_per_visitor"] = (
-        daily["sessions"] / daily["unique_visitors"].replace(0, pd.NA)
-    ).fillna(0.0)
+    # De-fragment after many merge operations before adding many engineered columns.
+    daily = daily.copy()
+    daily = _add_business_features(daily)
+    daily = _add_calendar_cyclical_features(daily, date_col="date")
 
-    daily["date"] = pd.to_datetime(daily["date"])
-    daily["year"] = daily["date"].dt.year
-    daily["month"] = daily["date"].dt.month
-    daily["day"] = daily["date"].dt.day
-    daily["day_of_week"] = daily["date"].dt.dayofweek
-    daily["day_of_year"] = daily["date"].dt.dayofyear
-    daily["week_of_year"] = daily["date"].dt.isocalendar().week.astype("Int64")
-    daily["is_weekend"] = (daily["day_of_week"] >= 5).astype(int)
+    # Whitelist of meaningful columns for temporal transforms.
+    # Keeping this list small avoids feature explosion from applying
+    # lag/rolling to every engineered ratio, cyclical, and share column.
+    # Per-column cost: 4 lags + 3 windows x 2 stats (mean/std) + 2 mom = 12 features.
+    _TEMPORAL_WHITELIST: list[str] = [
+        # Core P&L
+        "Revenue", "COGS", "gross_margin",
+        # Order volume & fulfilment
+        "orders_count", "quantity_sold", "delivered_orders",
+        "returned_orders", "cancelled_orders",
+        # Merchandise value
+        "net_merch_value", "discount_total",
+        # Web traffic
+        "sessions", "unique_visitors",
+        # Key derived KPIs (already ratio-form — informative lagged baselines)
+        "aov_true", "conversion_rate", "gross_margin_ratio",
+        "refund_rate", "return_items_ratio", "promo_intensity",
+        "engagement_score", "demand_strength",
+        # Inventory health
+        "inv_stock_on_hand", "inv_units_sold",
+        # Social signal
+        "reviews_count", "reviews_rating_mean",
+    ]
+    daily = add_temporal_transforms(
+        df=daily,
+        date_col="date",
+        lags=lag_values,
+        rolling_windows=rolling_windows,
+        cols=_TEMPORAL_WHITELIST,
+    )
 
     return daily
 
