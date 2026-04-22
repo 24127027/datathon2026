@@ -140,7 +140,12 @@ def load_web_traffic(
 ) -> pd.DataFrame:
 	csv_path = Path(data_root) / "operational" / "web_traffic.csv"
 	date_cols = ["date"] if parse_dates else None
-	return pd.read_csv(csv_path, parse_dates=date_cols)
+	web_traffic_df = pd.read_csv(csv_path, parse_dates=date_cols)
+	if parse_dates:
+		mask = web_traffic_df["date"].dt.year != 2012
+	else:
+		mask = pd.to_datetime(web_traffic_df["date"], errors="coerce").dt.year != 2012
+	return web_traffic_df.loc[mask].reset_index(drop=True)
 
 
 def load_sales(
@@ -149,4 +154,10 @@ def load_sales(
 ) -> pd.DataFrame:
 	csv_path = Path(data_root) / "analytical" / "sales.csv"
 	date_cols = ["Date"] if parse_dates else None
-	return pd.read_csv(csv_path, parse_dates=date_cols)
+	sales_df = pd.read_csv(csv_path, parse_dates=date_cols)
+	sales_df = sales_df.rename(columns={"Date": "date"})
+	if parse_dates:
+		mask = sales_df["date"].dt.year != 2012
+	else:
+		mask = pd.to_datetime(sales_df["date"], errors="coerce").dt.year != 2012
+	return sales_df.loc[mask].reset_index(drop=True)

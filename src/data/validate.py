@@ -110,7 +110,7 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
         "avg_session_duration_sec",
         "traffic_source",
     ],
-    "sales": ["Date", "Revenue", "COGS"],
+    "sales": ["date", "Revenue", "COGS"],
 }
 
 DATE_COLUMNS: dict[str, list[str]] = {
@@ -120,7 +120,7 @@ DATE_COLUMNS: dict[str, list[str]] = {
     "order_items": ["return_date", "review_date"],
     "inventory": ["snapshot_date"],
     "web_traffic": ["date"],
-    "sales": ["Date"],
+    "sales": ["date"],
 }
 
 NON_NEGATIVE_COLUMNS: dict[str, list[str]] = {
