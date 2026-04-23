@@ -52,7 +52,7 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
     ],
     "orders": [
         "order_id",
-        "order_date",
+        "date",
         "customer_id",
         "zip",
         "order_status",
@@ -116,7 +116,7 @@ EXPECTED_COLUMNS: dict[str, list[str]] = {
 DATE_COLUMNS: dict[str, list[str]] = {
     "customers": ["signup_date"],
     "promotions": ["start_date", "end_date"],
-    "orders": ["order_date", "ship_date", "delivery_date"],
+    "orders": ["date", "ship_date", "delivery_date"],
     "order_items": ["return_date", "review_date"],
     "inventory": ["snapshot_date"],
     "web_traffic": ["date"],
