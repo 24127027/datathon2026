@@ -88,7 +88,7 @@ def one_hot_encode(df: pd.DataFrame, categorical_cols: list[str]) -> pd.DataFram
 def drop_columns(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
     """Drop multiple columns safely and return a new dataframe."""
     cols = [col for col in columns]
-    return df.drop(columns=cols) 
+    return df.drop(columns=cols)
 
 
 def add_column(
