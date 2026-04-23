@@ -458,7 +458,7 @@ def build_daily_one_row_per_day(
     This function is designed to match the output schema produced by
     `load_orders`, `load_order_items`, `load_web_traffic`, `load_inventory`, and `load_sales`.
     """
-    _require_cols(orders_df,      {"order_id", "order_date", "customer_id"},                "orders_df")
+    _require_cols(orders_df,      {"order_id", "date", "customer_id"},                "orders_df")
     _require_cols(order_items_df, {"order_id", "quantity", "unit_price", "discount_amount"}, "order_items_df")
     _require_cols(web_traffic_df, {"date", "sessions", "unique_visitors", "page_views"},     "web_traffic_df")
     _require_cols(inventory_df,   {"snapshot_date", "stock_on_hand", "units_received", "units_sold"}, "inventory_df")
@@ -474,16 +474,16 @@ def build_daily_one_row_per_day(
     )
 
     orders_tmp = orders_df.copy()
-    orders_tmp["order_date"] = pd.to_datetime(orders_tmp["order_date"], errors="coerce")
-    orders_tmp = orders_tmp.dropna(subset=["order_date"])
+    orders_tmp["date"] = pd.to_datetime(orders_tmp["date"], errors="coerce")
+    orders_tmp = orders_tmp.dropna(subset=["date"])
 
     if "signup_date" in orders_tmp.columns:
         orders_tmp["signup_date"] = pd.to_datetime(orders_tmp["signup_date"], errors="coerce")
         orders_tmp["customer_tenure_days"] = (
-            orders_tmp["order_date"] - orders_tmp["signup_date"]
+            orders_tmp["date"] - orders_tmp["signup_date"]
         ).dt.days.clip(lower=0)
 
-    orders_tmp["order_weekend_flag"] = (orders_tmp["order_date"].dt.dayofweek >= 5).astype(int)
+    orders_tmp["order_weekend_flag"] = (orders_tmp["date"].dt.dayofweek >= 5).astype(int)
 
     if "order_status" in orders_tmp.columns:
         normalized_status = orders_tmp["order_status"].astype(str).str.lower().str.strip()
@@ -498,16 +498,16 @@ def build_daily_one_row_per_day(
         orders_tmp["delivery_date"] = pd.to_datetime(orders_tmp["delivery_date"], errors="coerce")
         orders_tmp["delivered_flag"] = orders_tmp["delivery_date"].notna().astype(int)
         orders_tmp["same_day_ship_flag"] = (
-            orders_tmp["ship_date"] == orders_tmp["order_date"]
+            orders_tmp["ship_date"] == orders_tmp["date"]
         ).astype(int)
         orders_tmp["same_day_delivery_flag"] = (
-            orders_tmp["delivery_date"] == orders_tmp["order_date"]
+            orders_tmp["delivery_date"] == orders_tmp["date"]
         ).astype(int)
         orders_tmp["shipping_lead_days"] = (
             orders_tmp["delivery_date"] - orders_tmp["ship_date"]
         ).dt.days
         orders_tmp["fulfillment_days"] = (
-            orders_tmp["delivery_date"] - orders_tmp["order_date"]
+            orders_tmp["delivery_date"] - orders_tmp["date"]
         ).dt.days
     else:
         orders_tmp["delivered_flag"] = 0
@@ -546,8 +546,8 @@ def build_daily_one_row_per_day(
     orders_agg["same_day_ship_orders"] = ("same_day_ship_flag", "sum")
     orders_agg["same_day_delivery_orders"] = ("same_day_delivery_flag", "sum")
 
-    orders_daily = orders_tmp.groupby("order_date", as_index=False).agg(**orders_agg)
-    orders_daily = orders_daily.rename(columns={"order_date": "date"})
+    orders_daily = orders_tmp.groupby("date", as_index=False).agg(**orders_agg)
+    orders_daily = orders_daily.rename(columns={"date": "date"})
     orders_daily["return_rate_orders"] = (
         orders_daily["returned_orders"] / orders_daily["orders_count"].replace(0, pd.NA)
     ).fillna(0.0)
@@ -565,7 +565,7 @@ def build_daily_one_row_per_day(
     ).fillna(0.0)
 
     order_mix_features = _merge_mix([
-        _category_share_daily(orders_tmp, "order_date", col, pfx)
+        _category_share_daily(orders_tmp, "date", col, pfx)
         for col, pfx in [
             ("payment_method",     "payment_method"),
             ("device_type",        "device"),
@@ -589,9 +589,9 @@ def build_daily_one_row_per_day(
     else:
         items_tmp["line_cogs"] = 0.0
 
-    order_dates = orders_tmp[["order_id", "order_date"]].drop_duplicates("order_id")
-    items_with_dates = items_tmp.merge(order_dates, on="order_id", how="left")
-    items_with_dates = items_with_dates.dropna(subset=["order_date"])
+    dates = orders_tmp[["order_id", "date"]].drop_duplicates("order_id")
+    items_with_dates = items_tmp.merge(dates, on="order_id", how="left")
+    items_with_dates = items_with_dates.dropna(subset=["date"])
 
     for promo_date_col in ["start_date_promo_1", "end_date_promo_1", "start_date_promo_2", "end_date_promo_2"]:
         if promo_date_col in items_with_dates.columns:
@@ -600,8 +600,8 @@ def build_daily_one_row_per_day(
     if {"promo_id", "start_date_promo_1", "end_date_promo_1"}.issubset(items_with_dates.columns):
         items_with_dates["promo_1_active_flag"] = (
             items_with_dates["promo_id"].notna()
-            & (items_with_dates["order_date"] >= items_with_dates["start_date_promo_1"])
-            & (items_with_dates["order_date"] <= items_with_dates["end_date_promo_1"])
+            & (items_with_dates["date"] >= items_with_dates["start_date_promo_1"])
+            & (items_with_dates["date"] <= items_with_dates["end_date_promo_1"])
         ).astype(int)
     else:
         items_with_dates["promo_1_active_flag"] = 0
@@ -609,8 +609,8 @@ def build_daily_one_row_per_day(
     if {"promo_id_2", "start_date_promo_2", "end_date_promo_2"}.issubset(items_with_dates.columns):
         items_with_dates["promo_2_active_flag"] = (
             items_with_dates["promo_id_2"].notna()
-            & (items_with_dates["order_date"] >= items_with_dates["start_date_promo_2"])
-            & (items_with_dates["order_date"] <= items_with_dates["end_date_promo_2"])
+            & (items_with_dates["date"] >= items_with_dates["start_date_promo_2"])
+            & (items_with_dates["date"] <= items_with_dates["end_date_promo_2"])
         ).astype(int)
     else:
         items_with_dates["promo_2_active_flag"] = 0
@@ -663,11 +663,11 @@ def build_daily_one_row_per_day(
     if "min_order_value_promo_2" in items_with_dates.columns:
         items_agg["promo_2_min_order_value_mean"] = ("min_order_value_promo_2", "mean")
 
-    items_daily = items_with_dates.groupby("order_date", as_index=False).agg(**items_agg)
-    items_daily = items_daily.rename(columns={"order_date": "date"})
+    items_daily = items_with_dates.groupby("date", as_index=False).agg(**items_agg)
+    items_daily = items_daily.rename(columns={"date": "date"})
 
     item_mix_features = _merge_mix([
-        _category_share_daily(items_with_dates, "order_date", col, pfx)
+        _category_share_daily(items_with_dates, "date", col, pfx)
         for col, pfx in [
             ("category",            "item_category"),
             ("segment",             "item_segment"),

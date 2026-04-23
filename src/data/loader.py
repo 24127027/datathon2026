@@ -31,7 +31,8 @@ def load_promotions(
 
 def load_orders(data_root: str | Path = "data/datathon-2026-round-1") -> pd.DataFrame:
 	base_path = Path(data_root) / "transaction"
-	orders_df = pd.read_csv(base_path / "orders.csv", parse_dates=["order_date"])
+	orders_df = pd.read_csv(base_path / "orders.csv").rename(columns={"order_date": "date"})
+	orders_df["date"] = pd.to_datetime(orders_df["date"], errors="coerce")
 	payments_df = pd.read_csv(base_path / "payments.csv")
 	shipments_df = pd.read_csv(
 		base_path / "shipments.csv",
