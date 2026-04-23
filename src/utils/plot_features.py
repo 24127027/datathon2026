@@ -308,3 +308,37 @@ def plot_overlay(
         ax.legend(loc="upper left")
         plt.tight_layout()
         plt.show()
+
+
+def plot_correlation_heatmap(
+    df: pd.DataFrame,
+    cols: list[str],
+    group_label: str = "",
+) -> None:
+    """Draw a full pairwise correlation heatmap for *cols* in *df*.
+
+    Filters *cols* to numeric-only columns present in *df*, then plots a
+    coolwarm heatmap.  If fewer than 2 numeric columns are found, prints a
+    warning and returns without plotting.
+
+    Parameters
+    ----------
+    df          : The daily dataframe (e.g. ``daily_df``).
+    cols        : Column names belonging to the feature group.
+    group_label : Label shown in the figure title.
+    """
+    import seaborn as sns
+
+    subset = df[cols].select_dtypes(include="number")
+
+    if subset.shape[1] < 2:
+        print(f"[{group_label}] fewer than 2 numeric columns — skipping.")
+        return
+
+    corr_matrix = subset.corr()
+
+    plt.figure(figsize=(16, 12))
+    sns.heatmap(corr_matrix, cmap="coolwarm", center=0)
+    plt.title(f"Multicollinearity Matrix — {group_label}")
+    plt.tight_layout()
+    plt.show()

@@ -8,8 +8,11 @@ def load_customers(
 	parse_dates: bool = True,
 ) -> pd.DataFrame:
 	csv_path = Path(data_root) / "master" / "customers.csv"
+	geo_path = Path(data_root) / "master" / "geography.csv"
 	date_cols = ["signup_date"] if parse_dates else None
-	return pd.read_csv(csv_path, parse_dates=date_cols)
+	customers_df = pd.read_csv(csv_path, parse_dates=date_cols)
+	geography_df = pd.read_csv(geo_path).drop(columns=["city"], errors="ignore")
+	return customers_df.merge(geography_df, on="zip", how="left")
 
 
 def load_products(
@@ -42,6 +45,11 @@ def load_orders(data_root: str | Path = "data/datathon-2026-round-1") -> pd.Data
 		Path(data_root) / "master" / "customers.csv",
 		parse_dates=["signup_date"],
 	)
+	geography_df = pd.read_csv(
+		Path(data_root) / "master" / "geography.csv"
+	).drop(columns=["city"], errors="ignore")
+	customers_df = customers_df.merge(geography_df, on="zip", how="left")
+	customers_df = customers_df.drop(columns=["zip", "city"], errors="ignore")
 	payments_df = payments_df.drop(columns=["payment_method"], errors="ignore")
 
 	orders_with_customers = orders_df.merge(
