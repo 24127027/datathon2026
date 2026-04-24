@@ -578,6 +578,7 @@ def build_daily_one_row_per_day(
     lag_values: tuple[int, ...] = (1, 7, 14, 28),
     rolling_windows: tuple[int, ...] = (7, 14, 28),
     keep_feature_count: int | None = None,
+    drop_years: Iterable[int] | None = None,
 ) -> pd.DataFrame:
     """Build a single daily table with exactly one row per calendar day.
 
@@ -1019,6 +1020,11 @@ def build_daily_one_row_per_day(
         # Only keep columns that actually exist in the dataframe
         valid_cols = [c for c in keep_cols if c in daily.columns]
         daily = daily[valid_cols]
+
+    # Optional year-level exclusion for controlled ablation experiments.
+    if drop_years:
+        years_to_drop = {int(year) for year in drop_years}
+        daily = daily[~daily["date"].dt.year.isin(years_to_drop)].reset_index(drop=True)
 
     return daily
 
