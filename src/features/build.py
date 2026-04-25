@@ -165,10 +165,10 @@ def add_temporal_transforms(
 def list_feature_columns(
     df: pd.DataFrame,
     date_col: str = "date",
-    target_col: str = "Revenue",
+    target_col: list[str]= ["Revenue", "COGS"],
 ) -> dict[str, list[str]]:
     """List feature columns by common forecasting groups for notebook inspection."""
-    excluded = {date_col, target_col}
+    excluded = {date_col, *target_col}
     feature_cols = [col for col in df.columns if col not in excluded]
 
     numeric = [col for col in feature_cols if pd.api.types.is_numeric_dtype(df[col])]
