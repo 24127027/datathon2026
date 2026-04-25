@@ -75,13 +75,13 @@ def plot_by_year(
     date_col       : Name of the date column.
     ma_window      : Rolling-average window (days).
     years          : Explicit list of years. ``None`` → all years present.
-    skip_years     : Years to exclude (default: ``[2012]``).
+    skip_years     : Years to exclude (default: ``[]``).
     max_cols       : Max subplot columns per figure.
     figsize_per_row: Figure height per row (inches).
     title_prefix   : Optional string prepended to each figure's suptitle.
     """
     if skip_years is None:
-        skip_years = [2012]
+        skip_years = []
 
     frame = daily[[date_col] + [c for c in fields if c in daily.columns]].copy()
     frame[date_col] = pd.to_datetime(frame[date_col], errors="coerce")
@@ -141,7 +141,7 @@ def plot_all_year(
     fields: list[str],
     date_col: str = "date",
     ma_window: int = 7,
-    start_date: str = "2013-01-01",
+    start_date: str = "2012-07-04",
     max_cols: int = 2,
     figsize_per_row: float = 3.4,
     title_prefix: str = "",
@@ -231,7 +231,6 @@ def plot_overlay(
     date_col: str = "date",
     years: list[int] | None = None,
     skip_years: list[int] | None = None,
-    start_date: str = "2013-01-01",
     figsize: tuple[float, float] = (14, 4),
     alpha: float = 0.75,
     fill: bool = True,
@@ -248,7 +247,7 @@ def plot_overlay(
     fields       : Column names to overlay (all drawn on the same axes).
     date_col     : Name of the date column.
     years        : Explicit list of years. ``None`` → all years present.
-    skip_years   : Years to exclude (default: ``[2012]``).
+    skip_years   : Years to exclude (default: ``[]``).
     start_date   : Only used when *years* is ``None`` to filter early data.
     figsize      : ``(width, height)`` per figure in inches.
     alpha        : Line / fill opacity.
@@ -256,7 +255,7 @@ def plot_overlay(
     title_prefix : Optional string prepended to each figure's suptitle.
     """
     if skip_years is None:
-        skip_years = [2012]
+        skip_years = []
 
     frame = daily[[date_col] + [c for c in fields if c in daily.columns]].copy()
     frame[date_col] = pd.to_datetime(frame[date_col], errors="coerce")
