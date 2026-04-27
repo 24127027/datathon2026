@@ -16,7 +16,6 @@ def add_time_features(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     out["month"] = out[date_col].dt.month
     out["day"] = out[date_col].dt.day
     out["day_of_week"] = out[date_col].dt.dayofweek
-    out["day_of_year"] = out[date_col].dt.dayofyear
     out["week_of_year"] = out[date_col].dt.isocalendar().week.astype("Int64")
     out["is_month_end"] = out[date_col].dt.is_month_end.astype(int)
     out["is_month_start"] = out[date_col].dt.is_month_start.astype(int)
