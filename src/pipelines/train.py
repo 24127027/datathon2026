@@ -1,110 +1,128 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
-from ..data.loader import load_sales, load_web_traffic
-from ..data.validate import validate_all_dataframes
 from ..evaluation.metrics import regression_metrics
 from ..models.sklearn_models import SklearnRegressorConfig, SklearnRegressorWrapper
 
 def train_validate_models(
     df: pd.DataFrame,
-    features: list[str],
-    targets: list[str],
     model_config: SklearnRegressorConfig,
+    train_range: tuple[str, str],
+    predict_range: tuple[str, str],
     date_col: str = "date",
-    valid_fraction: float = 0.2,
 ) -> dict[str, object]:
-    """Train one model per target on a time split and return validation metrics.\\
-        Returns a dictionary containing:\\
-            "train_df": train_df, \\
-            "valid_df": valid_df,\\
-            "models": models,\\
-            "predictions": preds,\\
-            "metrics": metrics,\\
+    """Train on one date range and validate on another using the infer-style interface.
+
+    Returns:
+        dict[str, object]:
+            - "train_df": Training rows selected by train_range.
+            - "valid_df": Validation rows selected by predict_range.
+            - "models": Dict with fitted models for "Revenue" and "COGS".
+            - "feature_cols": Numeric feature columns used for fitting/prediction.
+            - "train_medians": Per-feature medians computed on train_df for NA filling.
+            - "predictions": Dict with validation predictions for each target.
+            - "metrics": Dict with regression metrics per target on validation rows.
     """
-    if not features:
-        raise ValueError("features must not be empty")
-    if not targets:
-        raise ValueError("targets must contain at least one target column")
+    frame = _prepare_frame(df, date_col=date_col)
+    train_df, valid_df = _split_by_range(frame, date_col=date_col, train_range=train_range, predict_range=predict_range)
+    feature_cols = _select_feature_columns(frame, date_col=date_col)
 
-    # Prevent target leakage automatically
-    features = [f for f in features if f not in targets]
+    models, train_medians = _fit_target_models(
+        train_df=train_df,
+        feature_cols=feature_cols,
+        model_config=model_config,
+    )
 
-    train_df, valid_df = _split_by_time(df, date_col=date_col, valid_fraction=valid_fraction)
-    X_train = train_df[features]
-    X_valid = valid_df[features]
-
-    models: dict[str, SklearnRegressorWrapper] = {}
-    preds: dict[str, pd.Series] = {}
-    metrics: dict[str, dict[str, float]] = {}
-
-    for target_name in targets:
-        y_train = train_df[target_name]
-        y_valid = valid_df[target_name]
-
-        model = SklearnRegressorWrapper(model_config)
-        model.fit(X_train, y_train)
-        pred = pd.Series(model.predict(X_valid), index=valid_df.index, dtype="float64")
-
-        models[target_name] = model
-        preds[target_name] = pred
-        metrics[target_name] = regression_metrics(y_valid, pred)
+    X_valid = valid_df[feature_cols].fillna(train_medians).fillna(0.0)
+    preds: dict[str, pd.Series] = {
+        target_name: pd.Series(
+            np.asarray(model.predict(X_valid), dtype="float64"),
+            index=valid_df.index,
+            dtype="float64",
+        )
+        for target_name, model in models.items()
+    }
+    metrics = {
+        target_name: regression_metrics(valid_df[target_name].astype("float64"), pred)
+        for target_name, pred in preds.items()
+    }
 
     return {
         "train_df": train_df,
         "valid_df": valid_df,
         "models": models,
+        "feature_cols": feature_cols,
+        "train_medians": train_medians,
         "predictions": preds,
         "metrics": metrics,
     }
 
 
-def fit_models_full(
+def _prepare_frame(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
+    if date_col not in df.columns:
+        raise ValueError(f"Missing required date column: '{date_col}'")
+
+    required_targets = {"Revenue", "COGS"}
+    missing = required_targets.difference(df.columns)
+    if missing:
+        raise ValueError(f"Missing required target columns: {sorted(missing)}")
+
+    frame = df.copy()
+    frame[date_col] = pd.to_datetime(frame[date_col], errors="coerce")
+    frame = frame.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+    if frame.empty:
+        raise ValueError("No rows available after parsing date column")
+    return frame
+
+
+def _split_by_range(
     df: pd.DataFrame,
-    features: list[str],
-    targets: list[str],
+    date_col: str,
+    train_range: tuple[str, str],
+    predict_range: tuple[str, str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    train_start, train_end = pd.to_datetime(train_range[0]), pd.to_datetime(train_range[1])
+    pred_start, pred_end = pd.to_datetime(predict_range[0]), pd.to_datetime(predict_range[1])
+
+    train_mask = df[date_col].between(train_start, train_end, inclusive="both")
+    pred_mask = df[date_col].between(pred_start, pred_end, inclusive="both")
+    train_df = df.loc[train_mask].copy()
+    pred_df = df.loc[pred_mask].copy()
+
+    if train_df.empty:
+        raise ValueError("Train range produced no rows")
+    if pred_df.empty:
+        raise ValueError("Predict range produced no rows")
+    return train_df, pred_df
+
+
+def _select_feature_columns(df: pd.DataFrame, date_col: str) -> list[str]:
+    excluded = {date_col, "Revenue", "COGS"}
+    feature_cols = [
+        col
+        for col in df.columns
+        if col not in excluded and pd.api.types.is_numeric_dtype(df[col])
+    ]
+    if not feature_cols:
+        raise ValueError("No numeric feature columns available after exclusions")
+    return feature_cols
+
+
+def _fit_target_models(
+    train_df: pd.DataFrame,
+    feature_cols: list[str],
     model_config: SklearnRegressorConfig,
-    use_numpy: bool = True,
-) -> dict[str, SklearnRegressorWrapper]:
-    """Fit one model per target on full data for final submission inference."""
-    if not features:
-        raise ValueError("features must not be empty")
-    if not targets:
-        raise ValueError("targets must contain at least one target column")
-
-    # Prevent target leakage automatically
-    features = [f for f in features if f not in targets]
-
-    if use_numpy:
-        X: pd.DataFrame | np.ndarray = df[features].to_numpy(dtype="float64")
-    else:
-        X = df[features]
+) -> tuple[dict[str, SklearnRegressorWrapper], pd.Series]:
+    train_medians = train_df[feature_cols].median(numeric_only=True)
+    X_train = train_df[feature_cols].fillna(train_medians).fillna(0.0)
 
     models: dict[str, SklearnRegressorWrapper] = {}
-    for target_name in targets:
-        y = df[target_name]
-        y_fit: pd.Series | np.ndarray = y.to_numpy(dtype="float64") if use_numpy else y
-
+    for target_name in ["Revenue", "COGS"]:
+        y_train = train_df[target_name].astype("float64")
         model = SklearnRegressorWrapper(model_config)
-        model.fit(X, y_fit)
+        model.fit(X_train, y_train)
         models[target_name] = model
-
-    return models
-
-def _split_by_time(df: pd.DataFrame, date_col: str, valid_fraction: float) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-        Return train/validation splits based on a date column, ensuring temporal integrity for forecasting tasks.
-    """
-    
-    if not 0.0 < valid_fraction < 0.5:
-        raise ValueError("valid_fraction must be between 0 and 0.5")
-
-    sorted_df = df.sort_values(date_col).reset_index(drop=True)
-    split_idx = int(len(sorted_df) * (1.0 - valid_fraction))
-    return sorted_df.iloc[:split_idx].copy(), sorted_df.iloc[split_idx:].copy()
+    return models, train_medians
 
