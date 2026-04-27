@@ -1,223 +1,128 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import asdict, dataclass
-from pathlib import Path
-import json
-
 import numpy as np
 import pandas as pd
 
-from ..data.loader import load_sales, load_web_traffic
-from ..data.validate import validate_all_dataframes
 from ..evaluation.metrics import regression_metrics
-from ..features.build import build_feature_table
-from ..features.select import correlation_prune, low_variance_filter
 from ..models.sklearn_models import SklearnRegressorConfig, SklearnRegressorWrapper
-
-
-@dataclass
-class TrainConfig:
-    data_root: str = "data/datathon-2026-round-1"
-    date_col: str = "date"
-    target_col: str = "Revenue"
-    model_type: str = "random_forest"
-    valid_fraction: float = 0.2
-    output_dir: str = "results/runs"
-    run_name: str = "baseline_run"
-    random_state: int = 42
-    variance_threshold: float = 0.0
-    correlation_threshold: float = 0.98
-
-
-def _validate_blocking_issues(data_root: str) -> None:
-    validation = validate_all_dataframes(data_root)
-    errors = [
-        issue
-        for result in validation.values()
-        for issue in result.issues
-        if issue.severity == "error"
-    ]
-
-    if errors:
-        details = "\n".join(f"- {e.table}: {e.details}" for e in errors)
-        raise ValueError(f"Validation errors found:\n{details}")
-
-
-def split_by_time(df: pd.DataFrame, date_col: str, valid_fraction: float) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-        Return train/validation splits based on a date column, ensuring temporal integrity for forecasting tasks.
-    """
-    
-    if not 0.0 < valid_fraction < 0.5:
-        raise ValueError("valid_fraction must be between 0 and 0.5")
-
-    sorted_df = df.sort_values(date_col).reset_index(drop=True)
-    split_idx = int(len(sorted_df) * (1.0 - valid_fraction))
-    return sorted_df.iloc[:split_idx].copy(), sorted_df.iloc[split_idx:].copy()
-
-
-def build_revenue_ratio_targets(
-    df: pd.DataFrame,
-    revenue_col: str = "Revenue",
-    cogs_col: str = "COGS",
-    eps: float = 1e-6,
-) -> dict[str, pd.Series]:
-    """Build common target dictionary used by revenue/ratio modeling."""
-    if revenue_col not in df.columns:
-        raise ValueError(f"Missing revenue column: {revenue_col}")
-    if cogs_col not in df.columns:
-        raise ValueError(f"Missing COGS column: {cogs_col}")
-
-    revenue = df[revenue_col].astype("float64")
-    ratio = revenue / df[cogs_col].clip(lower=eps).astype("float64")
-    return {"revenue": revenue, "ratio": ratio}
-
 
 def train_validate_models(
     df: pd.DataFrame,
-    features: list[str],
-    targets: list[str],
     model_config: SklearnRegressorConfig,
+    train_range: tuple[str, str],
+    predict_range: tuple[str, str],
     date_col: str = "date",
-    valid_fraction: float = 0.2,
 ) -> dict[str, object]:
-    """Train one model per target on a time split and return validation metrics.\\
-        Returns a dictionary containing:\\
-            "train_df": train_df, \\
-            "valid_df": valid_df,\\
-            "models": models,\\
-            "predictions": preds,\\
-            "metrics": metrics,\\
+    """Train on one date range and validate on another using the infer-style interface.
+
+    Returns:
+        dict[str, object]:
+            - "train_df": Training rows selected by train_range.
+            - "valid_df": Validation rows selected by predict_range.
+            - "models": Dict with fitted models for "Revenue" and "COGS".
+            - "feature_cols": Numeric feature columns used for fitting/prediction.
+            - "train_medians": Per-feature medians computed on train_df for NA filling.
+            - "predictions": Dict with validation predictions for each target.
+            - "metrics": Dict with regression metrics per target on validation rows.
     """
-    if not features:
-        raise ValueError("features must not be empty")
-    if not targets:
-        raise ValueError("targets must contain at least one target column")
+    frame = _prepare_frame(df, date_col=date_col)
+    train_df, valid_df = _split_by_range(frame, date_col=date_col, train_range=train_range, predict_range=predict_range)
+    feature_cols = _select_feature_columns(frame, date_col=date_col)
 
-    # Prevent target leakage automatically
-    features = [f for f in features if f not in targets]
+    models, train_medians = _fit_target_models(
+        train_df=train_df,
+        feature_cols=feature_cols,
+        model_config=model_config,
+    )
 
-    train_df, valid_df = split_by_time(df, date_col=date_col, valid_fraction=valid_fraction)
-    X_train = train_df[features]
-    X_valid = valid_df[features]
-
-    models: dict[str, SklearnRegressorWrapper] = {}
-    preds: dict[str, pd.Series] = {}
-    metrics: dict[str, dict[str, float]] = {}
-
-    for target_name in targets:
-        y_train = train_df[target_name]
-        y_valid = valid_df[target_name]
-
-        model = SklearnRegressorWrapper(model_config)
-        model.fit(X_train, y_train)
-        pred = pd.Series(model.predict(X_valid), index=valid_df.index, dtype="float64")
-
-        models[target_name] = model
-        preds[target_name] = pred
-        metrics[target_name] = regression_metrics(y_valid, pred)
+    X_valid = valid_df[feature_cols].fillna(train_medians).fillna(0.0)
+    preds: dict[str, pd.Series] = {
+        target_name: pd.Series(
+            np.asarray(model.predict(X_valid), dtype="float64"),
+            index=valid_df.index,
+            dtype="float64",
+        )
+        for target_name, model in models.items()
+    }
+    metrics = {
+        target_name: regression_metrics(valid_df[target_name].astype("float64"), pred)
+        for target_name, pred in preds.items()
+    }
 
     return {
         "train_df": train_df,
         "valid_df": valid_df,
         "models": models,
+        "feature_cols": feature_cols,
+        "train_medians": train_medians,
         "predictions": preds,
         "metrics": metrics,
     }
 
 
-def fit_models_full(
+def _prepare_frame(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
+    if date_col not in df.columns:
+        raise ValueError(f"Missing required date column: '{date_col}'")
+
+    required_targets = {"Revenue", "COGS"}
+    missing = required_targets.difference(df.columns)
+    if missing:
+        raise ValueError(f"Missing required target columns: {sorted(missing)}")
+
+    frame = df.copy()
+    frame[date_col] = pd.to_datetime(frame[date_col], errors="coerce")
+    frame = frame.dropna(subset=[date_col]).sort_values(date_col).reset_index(drop=True)
+    if frame.empty:
+        raise ValueError("No rows available after parsing date column")
+    return frame
+
+
+def _split_by_range(
     df: pd.DataFrame,
-    features: list[str],
-    targets: list[str],
+    date_col: str,
+    train_range: tuple[str, str],
+    predict_range: tuple[str, str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    train_start, train_end = pd.to_datetime(train_range[0]), pd.to_datetime(train_range[1])
+    pred_start, pred_end = pd.to_datetime(predict_range[0]), pd.to_datetime(predict_range[1])
+
+    train_mask = df[date_col].between(train_start, train_end, inclusive="both")
+    pred_mask = df[date_col].between(pred_start, pred_end, inclusive="both")
+    train_df = df.loc[train_mask].copy()
+    pred_df = df.loc[pred_mask].copy()
+
+    if train_df.empty:
+        raise ValueError("Train range produced no rows")
+    if pred_df.empty:
+        raise ValueError("Predict range produced no rows")
+    return train_df, pred_df
+
+
+def _select_feature_columns(df: pd.DataFrame, date_col: str) -> list[str]:
+    excluded = {date_col, "Revenue", "COGS"}
+    feature_cols = [
+        col
+        for col in df.columns
+        if col not in excluded and pd.api.types.is_numeric_dtype(df[col])
+    ]
+    if not feature_cols:
+        raise ValueError("No numeric feature columns available after exclusions")
+    return feature_cols
+
+
+def _fit_target_models(
+    train_df: pd.DataFrame,
+    feature_cols: list[str],
     model_config: SklearnRegressorConfig,
-    use_numpy: bool = True,
-) -> dict[str, SklearnRegressorWrapper]:
-    """Fit one model per target on full data for final submission inference."""
-    if not features:
-        raise ValueError("features must not be empty")
-    if not targets:
-        raise ValueError("targets must contain at least one target column")
-
-    # Prevent target leakage automatically
-    features = [f for f in features if f not in targets]
-
-    if use_numpy:
-        X: pd.DataFrame | np.ndarray = df[features].to_numpy(dtype="float64")
-    else:
-        X = df[features]
+) -> tuple[dict[str, SklearnRegressorWrapper], pd.Series]:
+    train_medians = train_df[feature_cols].median(numeric_only=True)
+    X_train = train_df[feature_cols].fillna(train_medians).fillna(0.0)
 
     models: dict[str, SklearnRegressorWrapper] = {}
-    for target_name in targets:
-        y = df[target_name]
-        y_fit: pd.Series | np.ndarray = y.to_numpy(dtype="float64") if use_numpy else y
-
+    for target_name in ["Revenue", "COGS"]:
+        y_train = train_df[target_name].astype("float64")
         model = SklearnRegressorWrapper(model_config)
-        model.fit(X, y_fit)
+        model.fit(X_train, y_train)
         models[target_name] = model
+    return models, train_medians
 
-    return models
-
-
-def run_train_pipeline(config: TrainConfig) -> dict[str, object]:
-    """Run end-to-end training with deterministic feature creation and persistence."""
-    _validate_blocking_issues(config.data_root)
-
-    sales = load_sales(config.data_root)
-    web_traffic = load_web_traffic(config.data_root)
-
-    feature_df = build_feature_table(
-        sales_df=sales,
-        web_traffic_df=web_traffic,
-        date_col=config.date_col,
-        target_col=config.target_col,
-    )
-    feature_df = feature_df.dropna().reset_index(drop=True)
-
-    train_df, valid_df = split_by_time(feature_df, config.date_col, config.valid_fraction)
-
-    drop_cols = [config.date_col, config.target_col, "COGS"]
-    X_train = train_df.drop(columns=drop_cols, errors="ignore")
-    X_valid = valid_df.drop(columns=drop_cols, errors="ignore")
-    y_train = train_df[config.target_col]
-    y_valid = valid_df[config.target_col]
-
-    X_train, selected_after_variance = low_variance_filter(X_train, threshold=config.variance_threshold)
-    X_valid = X_valid.reindex(columns=selected_after_variance, fill_value=0.0)
-
-    X_train, selected_after_corr = correlation_prune(X_train, threshold=config.correlation_threshold)
-    X_valid = X_valid.reindex(columns=selected_after_corr, fill_value=0.0)
-
-    model_cfg = SklearnRegressorConfig(
-        model_type=config.model_type,
-        random_state=config.random_state,
-    )
-    model = SklearnRegressorWrapper(model_cfg).fit(X_train, y_train)
-    preds = model.predict(X_valid)
-
-    metrics = regression_metrics(y_valid, preds)
-
-    run_dir = Path(config.output_dir) / config.run_name
-    run_dir.mkdir(parents=True, exist_ok=True)
-
-    model_path = run_dir / "model.pkl"
-    model.save(model_path)
-
-    selected_path = run_dir / "selected_columns.json"
-    selected_path.write_text(json.dumps(selected_after_corr, indent=2), encoding="utf-8")
-
-    config_path = run_dir / "train_config.json"
-    config_path.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
-
-    metrics_path = run_dir / "metrics.json"
-    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-
-    return {
-        "run_dir": str(run_dir),
-        "model_path": str(model_path),
-        "metrics": metrics,
-        "n_train_rows": int(len(train_df)),
-        "n_valid_rows": int(len(valid_df)),
-        "n_features": int(X_train.shape[1]),
-    }

@@ -12,15 +12,22 @@ def add_time_features(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     out = df.copy()
     out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
 
-    out["year"] = out[date_col].dt.year
-    out["month"] = out[date_col].dt.month
-    out["day"] = out[date_col].dt.day
-    out["day_of_week"] = out[date_col].dt.dayofweek
-    out["day_of_year"] = out[date_col].dt.dayofyear
-    out["week_of_year"] = out[date_col].dt.isocalendar().week.astype("Int64")
-    out["is_month_end"] = out[date_col].dt.is_month_end.astype(int)
-    out["is_month_start"] = out[date_col].dt.is_month_start.astype(int)
-    out["is_weekend"] = (out["day_of_week"] >= 5).astype(int)
+    out["day"] = out["date"].dt.day
+    out["month"] = out["date"].dt.month
+    out["year"] = out["date"].dt.year
+
+    # day_of_month, isweekend không không thay dổi performance 
+    # nhưng không thể thay thế 2 feature trên
+    out["day_of_week"] = out["date"].dt.dayofweek
+    out["week_of_year"] = out["date"].dt.isocalendar().week
+
+
+    # Cái này quan trọng
+    out["month_sin"] = np.sin(2 * np.pi * out["month"]/12)
+    out["month_cos"] = np.cos(2 * np.pi * out["month"]/12)
+
+    # Cái feature này thần kỳ vcl
+    out["is_month8_odd"] = ((out["month"] == 8) & (out["year"] % 2 == 1))
 
     return out
 
@@ -165,10 +172,10 @@ def add_temporal_transforms(
 def list_feature_columns(
     df: pd.DataFrame,
     date_col: str = "date",
-    target_col: str = "Revenue",
+    target_col: list[str]= ["Revenue", "COGS"],
 ) -> dict[str, list[str]]:
     """List feature columns by common forecasting groups for notebook inspection."""
-    excluded = {date_col, target_col}
+    excluded = {date_col, *target_col}
     feature_cols = [col for col in df.columns if col not in excluded]
 
     numeric = [col for col in feature_cols if pd.api.types.is_numeric_dtype(df[col])]

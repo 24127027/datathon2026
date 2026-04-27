@@ -9,6 +9,7 @@ from .build import (
     build_feature_table,
     drop_columns,
     list_feature_columns,
+    one_hot_encode
 )
 from .select import correlation_prune, low_variance_filter, model_based_importance_select
 
@@ -24,4 +25,5 @@ __all__ = [
     "list_feature_columns",
     "low_variance_filter",
     "model_based_importance_select",
+    "one_hot_encode"
 ]
