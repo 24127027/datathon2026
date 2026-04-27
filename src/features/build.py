@@ -20,7 +20,9 @@ def add_time_features(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     out["is_month_end"] = out[date_col].dt.is_month_end.astype(int)
     out["is_month_start"] = out[date_col].dt.is_month_start.astype(int)
     out["is_weekend"] = (out["day_of_week"] >= 5).astype(int)
-
+    day_to_month_end = ((out[date_col] + pd.offsets.MonthEnd(0)) - out[date_col]).dt.days
+    out["dist_to_payday"] = pd.concat([day_to_month_end, out["day"]], axis=1).min(axis=1)
+    out["is_salary_period"] = (out["dist_to_payday"] <= 3).astype(int)
     return out
 
 

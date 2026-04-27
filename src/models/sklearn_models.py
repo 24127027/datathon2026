@@ -61,6 +61,7 @@ class SklearnRegressorWrapper:
                 num_leaves=config.num_leaves,
                 random_state=config.random_state,
                 n_jobs=-1,
+                verbosity=-1,
             )
         if config.model_type == "xgboost":
             from xgboost import XGBRegressor
