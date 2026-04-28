@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+from shap import TreeExplainer, summary_plot
 
 from ..evaluation.metrics import regression_metrics
 from ..models.sklearn_models import SklearnRegressorConfig, SklearnRegressorWrapper
@@ -12,6 +14,8 @@ def train_validate_models(
     train_range: tuple[str, str],
     predict_range: tuple[str, str],
     date_col: str = "date",
+    importance_plot: bool = False,
+    shap_plot: bool = False,
 ) -> dict[str, object]:
     """Train on one date range and validate on another using the infer-style interface.
 
@@ -48,6 +52,30 @@ def train_validate_models(
         target_name: regression_metrics(valid_df[target_name].astype("float64"), pred)
         for target_name, pred in preds.items()
     }
+
+    if importance_plot:
+
+        for target_name, model in models.items():
+            if hasattr(model.model, "feature_importances_"):
+                importances = model.model.feature_importances_
+                indices = np.argsort(importances)[::-1]
+                plt.figure(figsize=(10, 6))
+                plt.title(f"Feature Importances for {target_name}")
+                plt.bar(range(len(feature_cols)), importances[indices], align="center")
+                plt.xticks(range(len(feature_cols)), [feature_cols[i] for i in indices], rotation=90)
+                plt.tight_layout()
+                plt.show()
+            else:
+                print(f"Model for {target_name} does not have feature_importances_ attribute.")
+
+    if shap_plot:
+        for target_name, model in models.items():
+            try:
+                explainer = TreeExplainer(model.model)
+                shap_values = explainer.shap_values(X_valid)
+                summary_plot(shap_values, X_valid, feature_names=feature_cols, show=True)
+            except Exception as exc:
+                print(f"SHAP plot skipped for {target_name}: {exc}")
 
     return {
         "train_df": train_df,
