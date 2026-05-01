@@ -9,6 +9,7 @@ from .loader import (
     load_promotions,
     load_sales,
     load_web_traffic,
+    load_shipment,
 )
 from .validate import (
     inspect_data,
@@ -28,4 +29,5 @@ __all__ = [
     "load_web_traffic",
     "profile_all_dataframes",
     "validate_all_dataframes",
+    "load_shipment",
 ]

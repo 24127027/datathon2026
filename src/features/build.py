@@ -26,9 +26,6 @@ def add_time_features(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     out["month_sin"] = np.sin(2 * np.pi * out["month"]/12)
     out["month_cos"] = np.cos(2 * np.pi * out["month"]/12)
 
-    # Cái feature này thần kỳ vcl
-    out["is_month8_odd"] = ((out["month"] == 8) & (out["year"] % 2 == 1))
-
     return out
 
 

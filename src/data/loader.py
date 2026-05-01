@@ -22,6 +22,14 @@ def load_products(
 	csv_path = Path(data_root) / "master" / "products.csv"
 	return pd.read_csv(csv_path)
 
+def load_shipment(
+	data_root: str | Path = "data/datathon-2026-round-1",
+	parse_dates: bool = True,
+) -> pd.DataFrame:
+	csv_path = Path(data_root) / "transaction" / "shipments.csv"
+	date_cols = ["ship_date", "delivery_date"] if parse_dates else None
+	return pd.read_csv(csv_path, parse_dates=date_cols)
+
 
 def load_promotions(
 	data_root: str | Path = "data/datathon-2026-round-1",
