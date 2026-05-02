@@ -58,11 +58,14 @@ def train_validate_models(
         for target_name, model in models.items():
             if hasattr(model.model, "feature_importances_"):
                 importances = model.model.feature_importances_
-                indices = np.argsort(importances)[::-1]
-                plt.figure(figsize=(10, 6))
+                indices = np.argsort(importances)  # ascending so highest is at top
+                sorted_names = [feature_cols[i] for i in indices]
+                sorted_values = importances[indices]
+                plt.figure(figsize=(10, max(6, len(feature_cols) * 0.35)))
                 plt.title(f"Feature Importances for {target_name}")
-                plt.bar(range(len(feature_cols)), importances[indices], align="center")
-                plt.xticks(range(len(feature_cols)), [feature_cols[i] for i in indices], rotation=90)
+                plt.barh(range(len(feature_cols)), sorted_values, align="center")
+                plt.yticks(range(len(feature_cols)), sorted_names)
+                plt.xlabel("Importance")
                 plt.tight_layout()
                 plt.show()
             else:
