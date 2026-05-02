@@ -63,25 +63,6 @@ def add_rolling_features(
     return out
 
 
-def add_ratio_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Create stable ratio features from known business columns when available."""
-    out = df.copy()
-
-    if {"Revenue", "COGS"}.issubset(out.columns):
-        out["gross_margin"] = out["Revenue"] - out["COGS"]
-        out["gross_margin_ratio"] = (out["gross_margin"] / out["Revenue"].replace(0, pd.NA)).fillna(0.0)
-
-    if {"sessions", "unique_visitors"}.issubset(out.columns):
-        out["sessions_per_visitor"] = (
-            out["sessions"] / out["unique_visitors"].replace(0, pd.NA)
-        ).fillna(0.0)
-
-    if {"page_views", "sessions"}.issubset(out.columns):
-        out["pages_per_session"] = (out["page_views"] / out["sessions"].replace(0, pd.NA)).fillna(0.0)
-
-    return out
-
-
 def one_hot_encode(df: pd.DataFrame, categorical_cols: list[str]) -> pd.DataFrame:
     """Apply deterministxic one-hot encoding with sorted output columns."""
     cols = [col for col in categorical_cols if col in df.columns]
@@ -93,21 +74,6 @@ def drop_columns(df: pd.DataFrame, columns: Iterable[str]) -> pd.DataFrame:
     """Drop multiple columns safely and return a new dataframe."""
     cols = [col for col in columns]
     return df.drop(columns=cols)
-
-
-def add_column(
-    df: pd.DataFrame,
-    column_name: str,
-    values: pd.Series | list[Any] | Any,
-    overwrite: bool = True,
-) -> pd.DataFrame:
-    """Add a column to a dataframe with optional overwrite protection."""
-    if column_name in df.columns and not overwrite:
-        raise ValueError(f"Column '{column_name}' already exists and overwrite=False")
-
-    out = df.copy()
-    out[column_name] = values
-    return out
 
 
 def add_temporal_transforms(
@@ -202,64 +168,6 @@ def list_feature_columns(
         ],
         "ratio_features": [col for col in feature_cols if "_ratio" in col or "_per_" in col],
     }
-
-
-def build_feature_matrix(
-    sales_df: pd.DataFrame,
-    web_traffic_df: pd.DataFrame | None = None,
-    date_col: str = "date",
-    target_col: str = "Revenue",
-    extra_drop_cols: Iterable[str] = ("COGS",),
-    lag_values: tuple[int, ...] = (1, 7, 14, 28),
-    rolling_windows: tuple[int, ...] = (7, 14, 28),
-) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
-    """Build features and return X, y, and processed feature dataframe for notebooks."""
-    feature_df = build_feature_table(
-        sales_df=sales_df,
-        web_traffic_df=web_traffic_df,
-        date_col=date_col,
-        target_col=target_col,
-        lag_values=lag_values,
-        rolling_windows=rolling_windows,
-    )
-    feature_df = feature_df.dropna().reset_index(drop=True)
-
-    drop_cols = [date_col, target_col, *list(extra_drop_cols)]
-    X = drop_columns(feature_df, drop_cols)
-    y = feature_df[target_col].copy()
-    return X, y, feature_df
-
-
-def build_feature_table(
-    sales_df: pd.DataFrame,
-    web_traffic_df: pd.DataFrame | None = None,
-    date_col: str = "date",
-    target_col: str = "Revenue",
-    lag_values: tuple[int, ...] = (1, 7, 14, 28),
-    rolling_windows: tuple[int, ...] = (7, 14, 28),
-) -> pd.DataFrame:
-    """Build a deterministic feature table for daily forecasting tasks."""
-    if date_col not in sales_df.columns:
-        raise ValueError(f"Missing required date column: {date_col}")
-    if target_col not in sales_df.columns:
-        raise ValueError(f"Missing required target column: {target_col}")
-
-    features = sales_df.copy()
-    features[date_col] = pd.to_datetime(features[date_col], errors="coerce")
-    features = features.sort_values(date_col).reset_index(drop=True)
-
-    if web_traffic_df is not None and {"date", "sessions", "unique_visitors", "page_views"}.issubset(web_traffic_df.columns):
-        web_daily = web_traffic_df.copy()
-        web_daily["date"] = pd.to_datetime(web_daily["date"], errors="coerce")
-        web_daily = web_daily.groupby("date", as_index=False)[["sessions", "unique_visitors", "page_views"]].sum()
-        features = features.merge(web_daily, how="left", left_on=date_col, right_on="date").drop(columns=["date"], errors="ignore")
-
-    features = add_time_features(features, date_col=date_col)
-    features = add_ratio_features(features)
-    features = add_lag_features(features, target_col=target_col, lags=lag_values, date_col=date_col)
-    features = add_rolling_features(features, target_col=target_col, windows=rolling_windows, date_col=date_col)
-
-    return features
 
 
 def _require_cols(df: pd.DataFrame, cols: set[str], label: str) -> None:
